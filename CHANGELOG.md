@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.0.0
+
+- Promoted RaG DayZ Tools to its first stable release.
+- Added the dedicated RaG Tools Updater and routed every tool's update button through it.
+- Added RaG Game Data Extractor to the suite.
+- Renamed the project and repository to RaG DayZ Tools.
+
 ## 0.9.3 Beta
 
 - Added format-aware variable-length path rewriting for editable MLOD P3D files.

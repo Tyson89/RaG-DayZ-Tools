@@ -1,6 +1,6 @@
 # RaG DayZ Tools
 
-- **Version:** 0.9.3 Beta
+- **Version:** 1.0.0 Stable
 - **Author:** RaG Tyson
 - **License:** Freeware - Proprietary / All Rights Reserved
 - **Repository:** [Tyson89/RaG-DayZ-Tools](https://github.com/Tyson89/RaG-DayZ-Tools)
@@ -839,7 +839,7 @@ To publish the current version from `rag_version.py` without typing the Git tag 
 .\publish_release.ps1
 ```
 
-The script checks that the working tree is clean, builds the local installer package, checks release readiness, pushes `main`, creates the matching tag such as `v0.8.5-beta`, and pushes that tag. If the tag already exists, bump the version instead of reusing the old tag.
+The script checks that the working tree is clean, builds the local installer package, checks release readiness, pushes `main`, creates the matching tag such as `v1.0.0`, and pushes that tag. If the tag already exists, bump the version instead of reusing the old tag.
 
 ---
 
