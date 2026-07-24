@@ -52,10 +52,6 @@ Compiled releases do not require Python.
 - Workshop Publisher updates existing items only.
 - Download releases only from this repository.
 
-## Screenshots
-
-![RaG PBO Builder](screenshots/RaG_PBO_Builder.png)
-
 ## Source Builds
 
 ```powershell
