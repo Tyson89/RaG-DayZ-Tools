@@ -51,6 +51,7 @@ from rag_inspector_viewer import (
     get_syntax_mode,
     is_text_viewable_entry,
 )
+from rag_updater_launcher import launch_updater
 from rag_version import APP_VERSION
 
 try:
@@ -81,6 +82,8 @@ GRAPHITE_ACCENT = "#a74747"
 GRAPHITE_ACCENT_DARK = "#7f3434"
 GRAPHITE_ACCENT_HOVER = "#b65353"
 GRAPHITE_WARNING = "#d6aa5f"
+GRAPHITE_SUCCESS = "#7fb087"
+GRAPHITE_SUCCESS_DARK = "#41684a"
 
 
 class PboInspectorApp(DND_ROOT_CLASS):
@@ -187,6 +190,12 @@ class PboInspectorApp(DND_ROOT_CLASS):
         self.attach_button_hover(button, bg, hover_bg, active_bg)
         return button
 
+    def make_update_button(self, parent):
+        button = tk.Button(parent, text="Check for Update", command=lambda: launch_updater(self, APP_TITLE), bg=GRAPHITE_SUCCESS_DARK, fg="#ffffff", activebackground=GRAPHITE_SUCCESS, activeforeground="#ffffff", relief="flat", borderwidth=0, padx=12, pady=6, font=("Segoe UI", 9, "bold"), cursor="hand2")
+        button.pack(side="right", padx=(0, 8))
+        self.attach_button_hover(button, GRAPHITE_SUCCESS_DARK, GRAPHITE_SUCCESS, GRAPHITE_SUCCESS)
+        return button
+
     def build_ui(self):
         outer = ttk.Frame(self, padding=16)
         outer.pack(fill="both", expand=True)
@@ -197,7 +206,10 @@ class PboInspectorApp(DND_ROOT_CLASS):
         left.pack(side="left", fill="x", expand=True, padx=(14, 8))
         tk.Label(left, text=APP_TITLE, bg=GRAPHITE_HEADER, fg=GRAPHITE_TEXT, font=("Segoe UI", 18, "bold")).pack(anchor="w")
         tk.Label(left, text="Inspect and extract DayZ PBO archives. Drop a .pbo anywhere in this window.", bg=GRAPHITE_HEADER, fg=GRAPHITE_MUTED, font=("Segoe UI", 9)).pack(anchor="w")
-        tk.Label(header, text=f"v{APP_VERSION}", bg=GRAPHITE_HEADER, fg=GRAPHITE_MUTED, font=("Segoe UI", 9)).pack(side="right", padx=(8, 14))
+        right = tk.Frame(header, bg=GRAPHITE_HEADER)
+        right.pack(side="right", padx=(8, 14))
+        tk.Label(right, text=f"v{APP_VERSION}", bg=GRAPHITE_HEADER, fg=GRAPHITE_MUTED, font=("Segoe UI", 9)).pack(side="right")
+        self.make_update_button(right)
 
         path_frame = ttk.LabelFrame(outer, text="Archive", padding=12)
         path_frame.pack(fill="x", pady=(0, 10))

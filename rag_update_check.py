@@ -11,7 +11,7 @@ import urllib.request
 from pathlib import Path
 
 
-DEFAULT_RELEASES_URL = "https://api.github.com/repos/Tyson89/RaG-PBO-Builder/releases?per_page=20"
+DEFAULT_RELEASES_URL = "https://api.github.com/repos/Tyson89/RaG-DayZ-Tools/releases?per_page=20"
 USER_AGENT = "RaG-PBO-Builder"
 INSTALLER_PREFIX = "rag_pbo_tools_setup"
 
@@ -217,7 +217,7 @@ def download_update(update: dict, output_dir=None) -> Path:
     if not expected_digest:
         raise UpdateError("Release installer has no SHA-256 digest or checksum asset.")
 
-    target_dir = Path(output_dir) if output_dir else Path(tempfile.gettempdir()) / "RaG PBO Builder Updates"
+    target_dir = Path(output_dir) if output_dir else Path(tempfile.gettempdir()) / "RaG PBO Tools Updates"
     target_dir.mkdir(parents=True, exist_ok=True)
     target = target_dir / installer_name
     partial = target.with_suffix(target.suffix + ".part")

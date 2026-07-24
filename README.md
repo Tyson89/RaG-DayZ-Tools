@@ -1,13 +1,20 @@
-# RaG PBO Builder
+# RaG DayZ Tools
 
-**Version:** 0.9.3 Beta
-**Author:** RaG Tyson  
-**License:** Freeware - Proprietary / All Rights Reserved
+- **Version:** 0.9.3 Beta
+- **Author:** RaG Tyson
+- **License:** Freeware - Proprietary / All Rights Reserved
+- **Repository:** [Tyson89/RaG-DayZ-Tools](https://github.com/Tyson89/RaG-DayZ-Tools)
 
-RaG PBO Builder is a free build tool for DayZ modders.  
-It helps pack, binarize, convert, sign, check, and organize DayZ addon PBOs.
+RaG DayZ Tools is a free Windows toolkit for DayZ modders, mappers, and server owners.
 
-The tool is focused on practical DayZ addon building, safe output handling, useful preflight checks, and a clean workflow for modders and mappers.
+## Included Tools
+
+- `RaG_PBO_Builder.exe` — build, binarize, convert, sign, and validate DayZ addon PBOs
+- `RaG_Game_Data_Extractor.exe` — extract official game data into correct virtual paths
+- `RaG_PBO_Inspector.exe` — inspect, compare, preview, and extract existing PBO archives
+- `RaG_Mod_Relocator.exe` — preview and rewrite virtual mod path references
+- `RaG_Workshop_Publisher.exe` — validate and update existing DayZ Workshop items
+- `RaG_Tools_Updater.exe` — check, verify, and install complete suite updates
 
 ---
 
@@ -46,7 +53,7 @@ The tool is focused on practical DayZ addon building, safe output handling, usef
 - Stop active builds at the next safe pipeline point
 - Start a configured local `.bat`, `.cmd`, or `.exe` server launcher after a successful build or preset batch
 - Use a log severity filter to hide `INFO` lines or show only warnings/errors
-- Check GitHub releases from the Builder window, download a SHA-256 verified installer, and launch the update
+- Open the dedicated RaG Tools Updater from every tool, download a SHA-256 verified installer, and update the complete suite
 - Auto-detect DayZ Tools from Steam library folders, including non-C-drive Steam libraries
 - Includes additional terrain and mapper-focused WRP checks
 - Inspect and extract existing `.pbo` archives with the standalone `RaG_PBO_Inspector.exe`
@@ -152,6 +159,23 @@ P:\YourTag\YourObjectPack
 Use one folder per line. Add only folders that contain extracted addon configs needed by terrain objects. If Binarize produces a tiny WRP, the builder stops instead of packing a broken world.
 
 ---
+
+## Game Data Extractor
+
+`RaG_Game_Data_Extractor.exe` extracts official DayZ game PBOs into their virtual prefix paths.
+
+- Auto-detects stable and experimental Steam installations across library folders
+- Includes `Addons`, `dta`, and installed DLC `Addons` folders
+- Lets installed DLC archives replace smaller base-game compatibility archives
+- Uses every available CPU core for parallel PBO extraction and conversion, with atomic file replacement
+- Provides `Everything` and `Scripts only` profiles
+- Extracts directly without a verification or manifest-finalization pass
+- Always converts config bins to `.cpp`, deletes converted `config.bin` files, and converts rapified materials to text with `CfgConvert.exe`
+- Optionally downloads official [DayZ-Misc](https://github.com/BohemiaInteractive/DayZ-Misc) mapper source assets and overlays them into the matching vanilla paths
+- Reports protected `.ebo` archives instead of pretending they were extracted
+- Refuses unsafe archive paths and output folders inside the game installation
+
+DayZ-Misc is licensed separately under ADPL-SA: attribution, noncommercial use, Arma/DayZ only, and share-alike terms apply.
 
 ## PBO Inspector / Extractor
 
@@ -751,6 +775,18 @@ The generated inspector executable is written to:
 dist\RaG_PBO_Inspector\RaG_PBO_Inspector.exe
 ```
 
+To build the standalone game data extractor:
+
+```powershell
+.\build_rag_game_data_extractor.ps1
+```
+
+The generated executable is written to:
+
+```txt
+dist\RaG_Game_Data_Extractor\RaG_Game_Data_Extractor.exe
+```
+
 To build the standalone Mod Relocator:
 
 ```powershell
@@ -773,6 +809,18 @@ The generated executable is written to:
 
 ```txt
 dist\RaG_Workshop_Publisher\RaG_Workshop_Publisher.exe
+```
+
+To build the standalone Tools Updater:
+
+```powershell
+.\build_rag_tools_updater.ps1
+```
+
+The generated executable is written to:
+
+```txt
+dist\RaG_Tools_Updater\RaG_Tools_Updater.exe
 ```
 
 To make a public download package for GitHub Releases:

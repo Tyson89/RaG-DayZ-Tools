@@ -21,6 +21,7 @@ from rag_publisher_core import (
     validate_publish_request,
     workshop_url,
 )
+from rag_updater_launcher import launch_updater
 from rag_version import APP_VERSION
 
 
@@ -39,6 +40,7 @@ GRAPHITE_ACCENT_DARK = "#7f3434"
 GRAPHITE_ACCENT_HOVER = "#b65353"
 GRAPHITE_WARNING = "#d6aa5f"
 GRAPHITE_SUCCESS = "#7fb087"
+GRAPHITE_SUCCESS_DARK = "#41684a"
 GRAPHITE_ERROR = "#df7777"
 
 
@@ -271,6 +273,14 @@ class RaGWorkshopPublisherApp(tk.Tk):
             add_tooltip(button, tooltip)
         return button
 
+    def make_update_button(self, parent):
+        button = tk.Button(parent, text="Check for Update", command=lambda: launch_updater(self, APP_TITLE), bg=GRAPHITE_SUCCESS_DARK, fg="#ffffff", activebackground=GRAPHITE_SUCCESS, activeforeground="#ffffff", relief="flat", borderwidth=0, padx=12, pady=6, font=("Segoe UI", 9, "bold"), cursor="hand2")
+        button.pack(side="right", padx=(0, 8))
+        button.bind("<Enter>", lambda event: button.configure(bg=GRAPHITE_SUCCESS), add="+")
+        button.bind("<Leave>", lambda event: button.configure(bg=GRAPHITE_SUCCESS_DARK), add="+")
+        add_tooltip(button, "Open RaG Tools Updater.")
+        return button
+
     def build_ui(self):
         content = ttk.Frame(self)
         content.pack(fill="both", expand=True)
@@ -295,6 +305,7 @@ class RaGWorkshopPublisherApp(tk.Tk):
         tk.Label(left, text=APP_TITLE, bg=GRAPHITE_HEADER, fg=GRAPHITE_TEXT, font=("Segoe UI", 18, "bold")).pack(anchor="w")
         tk.Label(left, text="Update DayZ Workshop mods through the signed-in desktop Steam account.", bg=GRAPHITE_HEADER, fg=GRAPHITE_MUTED, font=("Segoe UI", 9)).pack(anchor="w")
         tk.Label(header_top, text=f"v{APP_VERSION}", bg=GRAPHITE_HEADER, fg=GRAPHITE_MUTED, font=("Segoe UI", 9)).pack(side="right", padx=(8, 0))
+        self.make_update_button(header_top)
 
         steam_status = tk.Frame(header, bg=GRAPHITE_HEADER)
         steam_status.pack(fill="x", padx=14, pady=(3, 9))

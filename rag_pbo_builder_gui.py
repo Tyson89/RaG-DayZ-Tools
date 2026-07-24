@@ -61,7 +61,7 @@ from rag_builder_storage import (
     save_saved_settings,
 )
 from rag_preflight import run_preflight_for_targets
-from rag_update_check import UpdateError, check_for_update as fetch_available_update, download_update
+from rag_updater_launcher import launch_updater
 from rag_version import APP_VERSION
 
 APP_TITLE = "RaG PBO Builder"
@@ -368,7 +368,6 @@ class RaGPboBuilderApp(tk.Tk):
         self.worker_thread = None
         self.cancel_event = threading.Event()
         self.is_building = False
-        self.update_download_in_progress = False
         self.current_log_file = None
         self.current_log_path = ""
         self.current_addon_targets = []
@@ -594,7 +593,7 @@ class RaGPboBuilderApp(tk.Tk):
         self.about_button = self._make_header_button(right, "About", self.open_about_window)
         self.licence_button = self._make_header_button(right, "Licence", self.open_licence_window)
         self.options_button = self._make_header_button(right, "Options", self.open_options_window)
-        self.update_check_button = self._make_update_header_button(right, "Check for Update", self.start_update_check)
+        self.update_check_button = self._make_update_header_button(right, "Check for Update", lambda: launch_updater(self, APP_TITLE))
 
         profiles = ttk.Frame(outer, style="Card.TFrame", padding=(12, 8))
         profiles.pack(fill="x", pady=(0, 10))
@@ -733,7 +732,7 @@ class RaGPboBuilderApp(tk.Tk):
         button = tk.Button(parent, text=text, command=command, bg=GRAPHITE_SUCCESS_DARK, fg="#ffffff", activebackground=GRAPHITE_SUCCESS, activeforeground="#ffffff", relief="flat", borderwidth=0, padx=12, pady=6, font=("Segoe UI", 9, "bold"), cursor="hand2")
         button.pack(side="right", padx=(0, 8))
         self._attach_button_hover(button, GRAPHITE_SUCCESS_DARK, GRAPHITE_SUCCESS, GRAPHITE_SUCCESS)
-        add_tooltip(button, "Check GitHub releases for a newer RaG PBO Builder version.")
+        add_tooltip(button, "Open RaG Tools Updater.")
         return button
 
     def _attach_button_hover(self, button, normal_bg, hover_bg, pressed_bg=None):
@@ -2205,110 +2204,9 @@ class RaGPboBuilderApp(tk.Tk):
                     self.set_status("Error", "error")
                     self.close_current_log_file()
                     messagebox.showerror(APP_TITLE, payload)
-                elif item_type == "update_check_done":
-                    if hasattr(self, "update_check_button"):
-                        self.update_check_button.configure(state="normal")
-                    self.handle_update_check_result(payload)
-                elif item_type == "update_check_error":
-                    if hasattr(self, "update_check_button"):
-                        self.update_check_button.configure(state="normal")
-                    self.log(f"WARNING: {payload}")
-                    self.set_status("Update check failed", "error")
-                    messagebox.showwarning(APP_TITLE, str(payload))
-                elif item_type == "update_download_done":
-                    self.finish_update_download(payload, "")
-                elif item_type == "update_download_error":
-                    self.finish_update_download(None, str(payload))
         except queue.Empty:
             flush()
         self.after(100, self._poll_log_queue)
-
-    def start_update_check(self):
-        if self.is_building or self.update_download_in_progress:
-            return
-        if hasattr(self, "update_check_button"):
-            self.update_check_button.configure(state="disabled")
-        self.set_status("Checking for updates...", "building")
-        self.log("INFO: Checking GitHub releases for updates...")
-        threading.Thread(target=self._update_check_worker, daemon=True).start()
-
-    def _update_check_worker(self):
-        try:
-            update = fetch_available_update(APP_VERSION)
-            self.log_queue.put(("update_check_done", update))
-        except (UpdateError, OSError, ValueError) as exc:
-            self.log_queue.put(("update_check_error", str(exc)))
-
-    def handle_update_check_result(self, update):
-        if update is None:
-            self.set_status("Application is current", "success")
-            self.log(f"Installed version is up to date: {APP_VERSION}.")
-            messagebox.showinfo(APP_TITLE, f"RaG PBO Builder is up to date.\n\nInstalled: {APP_VERSION}")
-            return
-
-        self.set_status(f"Update {update['version']} available", "warning")
-        self.log(f"Update available: installed {APP_VERSION}, latest {update['name']}.")
-        notes = self._format_release_notes_excerpt(update.get("notes", ""))
-        message = f"{update['name']} is available.\n\nCurrent version: {APP_VERSION}"
-        if notes:
-            message += f"\n\nRelease notes:\n{notes}"
-        message += "\n\nDownload verified installer now?"
-        if messagebox.askyesno(APP_TITLE, message):
-            self.download_available_update(update)
-
-    def download_available_update(self, update):
-        if self.update_download_in_progress:
-            return
-        self.update_download_in_progress = True
-        if hasattr(self, "update_check_button"):
-            self.update_check_button.configure(state="disabled")
-        self.set_status(f"Downloading update {update['version']}...", "building")
-
-        def worker():
-            try:
-                installer_path = download_update(update)
-                self.log_queue.put(("update_download_done", installer_path))
-            except (UpdateError, OSError, ValueError) as exc:
-                self.log_queue.put(("update_download_error", str(exc)))
-
-        threading.Thread(target=worker, daemon=True).start()
-
-    def finish_update_download(self, installer_path, error):
-        self.update_download_in_progress = False
-        if hasattr(self, "update_check_button"):
-            self.update_check_button.configure(state="normal")
-        if error:
-            self.set_status("Update download failed", "error")
-            self.log(f"WARNING: {error}")
-            messagebox.showerror(APP_TITLE, f"Could not download update:\n\n{error}")
-            return
-        self.set_status("Update downloaded and verified", "success")
-        self.log(f"Update installer downloaded and verified: {installer_path}")
-        if self.is_building:
-            messagebox.showwarning(APP_TITLE, "Update downloaded and verified. Wait for the current build/preflight to finish, then check for updates again to install it.")
-            return
-        if not messagebox.askyesno(APP_TITLE, "Update downloaded and verified.\n\nClose RaG PBO Builder and install it now?"):
-            return
-        try:
-            subprocess.Popen([str(installer_path), "/SP-", "/CLOSEAPPLICATIONS", "/NORESTART"])
-        except OSError as exc:
-            messagebox.showerror(APP_TITLE, f"Could not start update installer:\n\n{exc}")
-            return
-        self.destroy()
-
-    def _format_release_notes_excerpt(self, body):
-        lines = []
-        for raw_line in str(body or "").splitlines():
-            line = raw_line.strip()
-            if not line:
-                continue
-            lines.append(line)
-            if len(lines) >= 8:
-                break
-        text = "\n".join(lines)
-        if len(text) > 900:
-            return text[:897].rstrip() + "..."
-        return text
 
     def log(self, message):
         self.log_many([message])
