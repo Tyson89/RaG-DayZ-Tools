@@ -8,6 +8,7 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
 from rag_builder_storage import get_app_data_dir, load_json_file, resource_path, save_json_file
+from rag_licence import make_licence_button
 from rag_relocator_core import apply_scan, copy_and_apply_scan, find_path_candidates, normalize_virtual_path, scan_references
 from rag_updater_launcher import launch_updater
 from rag_version import APP_VERSION
@@ -235,6 +236,7 @@ class RaGModRelocatorApp(tk.Tk):
         right.pack(side="right", padx=(8, 14))
         tk.Label(right, text=f"v{APP_VERSION}", bg=GRAPHITE_HEADER, fg=GRAPHITE_MUTED, font=("Segoe UI", 9)).pack(side="right")
         self.make_update_button(right)
+        make_licence_button(right, self)
 
         paths = ttk.LabelFrame(outer, text="Relocation", padding=12)
         paths.pack(fill="x", pady=(0, 10))

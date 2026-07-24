@@ -51,6 +51,7 @@ from rag_inspector_viewer import (
     get_syntax_mode,
     is_text_viewable_entry,
 )
+from rag_licence import make_licence_button
 from rag_updater_launcher import launch_updater
 from rag_version import APP_VERSION
 
@@ -210,6 +211,7 @@ class PboInspectorApp(DND_ROOT_CLASS):
         right.pack(side="right", padx=(8, 14))
         tk.Label(right, text=f"v{APP_VERSION}", bg=GRAPHITE_HEADER, fg=GRAPHITE_MUTED, font=("Segoe UI", 9)).pack(side="right")
         self.make_update_button(right)
+        make_licence_button(right, self)
 
         path_frame = ttk.LabelFrame(outer, text="Archive", padding=12)
         path_frame.pack(fill="x", pady=(0, 10))

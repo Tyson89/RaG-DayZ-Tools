@@ -30,6 +30,7 @@ from rag_game_data_extractor_core import (
     has_conversion_candidates,
 )
 from rag_inspector_settings import resource_path
+from rag_licence import make_licence_button
 from rag_updater_launcher import launch_updater
 from rag_version import APP_VERSION
 
@@ -284,6 +285,7 @@ class GameDataExtractorApp(tk.Tk):
             font=("Segoe UI", 9),
         ).pack(side="right")
         self.make_update_button(right)
+        make_licence_button(right, self)
 
         paths = ttk.LabelFrame(outer, text="Game data")
         paths.pack(fill="x", pady=(0, 10))

@@ -61,37 +61,12 @@ from rag_builder_storage import (
     save_saved_settings,
 )
 from rag_preflight import run_preflight_for_targets
+from rag_licence import LICENCE_NAME as APP_LICENSE_NAME, LICENCE_TEXT as APP_LICENSE_TEXT
 from rag_updater_launcher import launch_updater
 from rag_version import APP_VERSION
 
 APP_TITLE = "RaG PBO Builder"
 APP_AUTHOR = "RaG Tyson"
-APP_LICENSE_NAME = "Freeware - Proprietary / All Rights Reserved"
-APP_LICENSE_TEXT = """RaG PBO Builder License
-
-Copyright (c) 2026 RaG Tyson
-
-Freeware - Proprietary / All Rights Reserved
-
-This software is freeware.
-You may use it free of charge for personal and authorized DayZ modding purposes.
-
-All rights reserved.
-
-You may not sell, rent, sublicense, reupload, redistribute, modify, decompile,
-reverse engineer, publish, or include this software or its source code in another
-project without written permission from the author.
-
-This software is provided "as is", without warranty of any kind, express or implied.
-
-The author is not responsible for damaged files, lost data, invalid PBOs, failed
-builds, server issues, broken signatures, leaked keys, or any other damage caused
-by the use or misuse of this software.
-
-Important:
-Never share your .biprivatekey.
-Only distribute the matching .bikey.
-"""
 APP_ICON_FILE = os.path.join("assets", "installer.ico")
 
 DEFAULT_TEMP_DIR = str(Path("P:/Temp"))

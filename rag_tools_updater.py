@@ -10,6 +10,7 @@ import webbrowser
 from pathlib import Path
 from tkinter import messagebox, ttk
 
+from rag_licence import make_licence_button
 from rag_update_check import UpdateError, check_for_update, download_update
 from rag_version import APP_VERSION
 
@@ -94,6 +95,7 @@ class RaGToolsUpdaterApp(tk.Tk):
         tk.Label(left, text=APP_TITLE, bg=GRAPHITE_HEADER, fg=GRAPHITE_TEXT, font=("Segoe UI", 18, "bold")).pack(anchor="w")
         tk.Label(left, text="Update complete RaG PBO Tools installation.", bg=GRAPHITE_HEADER, fg=GRAPHITE_MUTED, font=("Segoe UI", 9)).pack(anchor="w")
         tk.Label(header, text=f"v{APP_VERSION}", bg=GRAPHITE_HEADER, fg=GRAPHITE_MUTED, font=("Segoe UI", 9)).pack(side="right")
+        make_licence_button(header, self)
 
         versions = ttk.Frame(outer, style="Card.TFrame", padding=14)
         versions.pack(fill="x", pady=(0, 12))

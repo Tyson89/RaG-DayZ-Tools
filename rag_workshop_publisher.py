@@ -9,6 +9,7 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
 from rag_builder_storage import get_app_data_dir, load_json_file, resource_path, save_json_file
+from rag_licence import make_licence_button
 from rag_publisher_core import (
     PublishRequest,
     SteamBridgeError,
@@ -306,6 +307,7 @@ class RaGWorkshopPublisherApp(tk.Tk):
         tk.Label(left, text="Update DayZ Workshop mods through the signed-in desktop Steam account.", bg=GRAPHITE_HEADER, fg=GRAPHITE_MUTED, font=("Segoe UI", 9)).pack(anchor="w")
         tk.Label(header_top, text=f"v{APP_VERSION}", bg=GRAPHITE_HEADER, fg=GRAPHITE_MUTED, font=("Segoe UI", 9)).pack(side="right", padx=(8, 0))
         self.make_update_button(header_top)
+        make_licence_button(header_top, self)
 
         steam_status = tk.Frame(header, bg=GRAPHITE_HEADER)
         steam_status.pack(fill="x", padx=14, pady=(3, 9))

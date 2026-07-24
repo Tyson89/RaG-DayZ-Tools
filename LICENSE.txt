@@ -1,4 +1,4 @@
-RaG PBO Builder License
+RaG DayZ Tools License
 
 Copyright (c) 2026 RaG Tyson
 
