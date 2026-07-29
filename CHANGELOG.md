@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.0.1
+
+- Split exclusions into file-extension and recursive folder-name settings, with `source` and `temp` excluded as folders by default.
+- Kept extension-excluded build inputs available during Binarize and CfgConvert while excluding them from the final PBO.
+- Made excluded build-input changes invalidate the build cache.
+- Added `--exclude-extensions` and `--exclude-folders` CLI options plus automatic migration of legacy exclusion settings.
+
 ## 1.0.0
 
 - Promoted RaG DayZ Tools to its first stable release.

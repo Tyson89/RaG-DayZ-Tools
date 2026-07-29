@@ -2,7 +2,7 @@
 
 Free Windows toolkit for DayZ modders, terrain makers, and server owners.
 
-- **Version:** 1.0.0 Stable
+- **Version:** 1.0.1 Stable
 - **Author:** RaG Tyson
 - **Documentation:** [RaG DayZ Tools Wiki](https://github.com/Tyson89/RaG-DayZ-Tools/wiki)
 - **Downloads:** [GitHub Releases](https://github.com/Tyson89/RaG-DayZ-Tools/releases)
@@ -43,6 +43,13 @@ Full guides live in [Wiki](https://github.com/Tyson89/RaG-DayZ-Tools/wiki):
 - Desktop Steam plus owned DayZ for Workshop publishing
 
 Compiled releases do not require Python.
+
+## PBO Builder Exclusions
+
+- **Exclude file extensions** controls final PBO contents. Matching files remain available during Binarize and CfgConvert so `#include` headers work.
+- **Exclude folder names** ignores matching folders and everything inside them throughout the build.
+- Default excluded folders: `source`, `temp`.
+- CLI equivalents: `--exclude-extensions` and `--exclude-folders`.
 
 ## Important
 
