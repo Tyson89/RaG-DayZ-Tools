@@ -5,13 +5,10 @@ import sys
 from pathlib import Path
 
 from rag_build_pipeline import build_all, detect_addon_targets, get_default_max_processes
-from rag_builder_common import BuildError, parse_exclude_patterns
+from rag_builder_common import BuildError, get_exclusion_rules, get_exclusion_setting_values
 from rag_builder_storage import create_build_log_path, load_saved_settings
 from rag_preflight import run_preflight_for_targets
 from rag_version import APP_VERSION
-
-
-DEFAULT_EXCLUDE_PATTERNS = "*.h,*.hpp,*.png,*.cpp,*.txt,thumbs.db,*.dep,*.bak,*.log,*.pew,source,*.tga,*.bat,*.psd,*.cmd,*.mcr,*.fbx,*.max"
 
 
 def add_boolean_override(parser, name, destination, help_text):
@@ -32,7 +29,9 @@ def build_parser():
         command.add_argument("--project-root", help="Project root, usually P:. Defaults to saved GUI setting.")
         command.add_argument("--temp", dest="temp_dir", help="Temporary build folder. Defaults to saved GUI setting.")
         command.add_argument("--cfgconvert", dest="cfgconvert_exe", help="Path to CfgConvert.exe.")
-        command.add_argument("--exclude", dest="exclude_patterns", help="Comma-separated exclude patterns.")
+        command.add_argument("--exclude-extensions", dest="exclude_file_extensions", help="Comma-separated file extensions to exclude.")
+        command.add_argument("--exclude-folders", dest="exclude_folder_names", help="Comma-separated folder names to exclude recursively.")
+        command.add_argument("--exclude", dest="exclude_patterns", help=argparse.SUPPRESS)
         command.add_argument("--log-file", help="Log path. Defaults to Builder log folder.")
         command.add_argument("--json", action="store_true", help="Write final result as JSON; send normal log lines to stderr.")
 
@@ -64,13 +63,13 @@ def get_value(args, saved, argument, setting=None, default=None):
     return saved.get(setting or argument, default)
 
 
-def select_targets(source_root, output_root, exclude_patterns, requested_names, saved_names):
+def select_targets(source_root, output_root, exclusion_settings, requested_names, saved_names):
     if not source_root:
         raise BuildError("Project Source is required. Use --source or save it in the GUI.")
     if not os.path.isdir(source_root):
         raise BuildError(f"Project Source does not exist: {source_root}")
     output_addons = os.path.join(output_root, "Addons") if output_root else ""
-    targets = detect_addon_targets(source_root, output_addons, parse_exclude_patterns(exclude_patterns))
+    targets = detect_addon_targets(source_root, output_addons, get_exclusion_rules(exclusion_settings))
     available = {name: path for name, path in targets}
     names = requested_names or [name for name in saved_names if name in available] or list(available)
     missing = [name for name in names if name not in available]
@@ -97,7 +96,15 @@ def make_settings(args, saved):
     settings["project_root"] = get_value(args, saved, "project_root", default="P:") or "P:"
     settings["temp_dir"] = get_value(args, saved, "temp_dir", default="P:/Temp") or "P:/Temp"
     settings["cfgconvert_exe"] = get_value(args, saved, "cfgconvert_exe", default="")
-    settings["exclude_patterns"] = get_value(args, saved, "exclude_patterns", default=DEFAULT_EXCLUDE_PATTERNS)
+    exclusion_settings = dict(saved)
+    if args.exclude_patterns is not None:
+        exclusion_settings.pop("exclude_file_extensions", None)
+        exclusion_settings.pop("exclude_folder_names", None)
+        exclusion_settings["exclude_patterns"] = args.exclude_patterns
+    exclude_file_extensions, exclude_folder_names = get_exclusion_setting_values(exclusion_settings)
+    settings["exclude_file_extensions"] = args.exclude_file_extensions if args.exclude_file_extensions is not None else exclude_file_extensions
+    settings["exclude_folder_names"] = args.exclude_folder_names if args.exclude_folder_names is not None else exclude_folder_names
+    settings.pop("exclude_patterns", None)
     settings["log_file"] = args.log_file or str(create_build_log_path())
 
     if args.command == "build":
@@ -141,7 +148,7 @@ def run_cli(argv=None):
         targets = select_targets(
             settings["source_root"],
             settings.get("output_root_dir", ""),
-            settings["exclude_patterns"],
+            settings,
             args.addons,
             saved.get("selected_addons", []),
         )

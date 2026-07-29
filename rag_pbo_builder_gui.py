@@ -45,8 +45,11 @@ from rag_build_pipeline import (
 from rag_builder_common import (
     BuildCancelled,
     BuildError,
+    DEFAULT_EXCLUDE_FILE_EXTENSIONS,
+    DEFAULT_EXCLUDE_FOLDER_NAMES,
     WIN_SEP,
-    parse_exclude_patterns,
+    get_exclusion_rules,
+    get_exclusion_setting_values,
 )
 from rag_builder_storage import (
     create_build_log_path,
@@ -71,7 +74,6 @@ APP_ICON_FILE = os.path.join("assets", "installer.ico")
 
 DEFAULT_TEMP_DIR = str(Path("P:/Temp"))
 DEFAULT_PROJECT_ROOT = "P:"
-DEFAULT_EXCLUDE_PATTERNS = "*.h,*.hpp,*.png,*.cpp,*.txt,thumbs.db,*.dep,*.bak,*.log,*.pew,source,*.tga,*.bat,*.psd,*.cmd,*.mcr,*.fbx,*.max"
 PROFILE_SCHEMA_VERSION = 2
 DEFAULT_PROFILE_NAME = "Default"
 PROFILE_DEFAULT_SETTINGS = {
@@ -89,7 +91,8 @@ PROFILE_DEFAULT_SETTINGS = {
     "start_server_after_build": False,
     "project_root": DEFAULT_PROJECT_ROOT,
     "binarize_addon_folders": "",
-    "exclude_patterns": DEFAULT_EXCLUDE_PATTERNS,
+    "exclude_file_extensions": DEFAULT_EXCLUDE_FILE_EXTENSIONS,
+    "exclude_folder_names": DEFAULT_EXCLUDE_FOLDER_NAMES,
     "preflight_check_required_addons_hints": True,
     "preflight_check_texture_freshness": True,
     "preflight_check_risky_paths": True,
@@ -119,7 +122,8 @@ PROFILE_VAR_FIELDS = {
     "start_server_after_build": "start_server_after_build_var",
     "project_root": "project_root_var",
     "binarize_addon_folders": "binarize_addon_folders_var",
-    "exclude_patterns": "exclude_patterns_var",
+    "exclude_file_extensions": "exclude_file_extensions_var",
+    "exclude_folder_names": "exclude_folder_names_var",
     "preflight_check_required_addons_hints": "preflight_check_required_addons_hints_var",
     "preflight_check_texture_freshness": "preflight_check_texture_freshness_var",
     "preflight_check_risky_paths": "preflight_check_risky_paths_var",
@@ -283,6 +287,9 @@ def normalize_profile_settings(value):
         value["output_root"] = value["output_addons"]
     if "pbo_name" not in value and value.get("prefix_root"):
         value["pbo_name"] = value["prefix_root"]
+    exclude_file_extensions, exclude_folder_names = get_exclusion_setting_values(value)
+    value.setdefault("exclude_file_extensions", exclude_file_extensions)
+    value.setdefault("exclude_folder_names", exclude_folder_names)
     settings = {}
     for key, default in PROFILE_DEFAULT_SETTINGS.items():
         item = value.get(key, default)
@@ -376,7 +383,9 @@ class RaGPboBuilderApp(tk.Tk):
         self.project_root_var = tk.StringVar(value=self.saved_settings.get("project_root", DEFAULT_PROJECT_ROOT))
         self.temp_dir_var = tk.StringVar(value=self.saved_settings.get("temp_dir", DEFAULT_TEMP_DIR))
         self.binarize_addon_folders_var = tk.StringVar(value=self.saved_settings.get("binarize_addon_folders", ""))
-        self.exclude_patterns_var = tk.StringVar(value=self.saved_settings.get("exclude_patterns", DEFAULT_EXCLUDE_PATTERNS))
+        exclude_file_extensions, exclude_folder_names = get_exclusion_setting_values(self.saved_settings)
+        self.exclude_file_extensions_var = tk.StringVar(value=exclude_file_extensions)
+        self.exclude_folder_names_var = tk.StringVar(value=exclude_folder_names)
         self.log_filter_var = tk.StringVar(value=self.saved_settings.get("log_filter", "All"))
         self.preflight_check_required_addons_hints_var = tk.BooleanVar(value=self.saved_settings.get("preflight_check_required_addons_hints", True))
         self.preflight_check_texture_freshness_var = tk.BooleanVar(value=self.saved_settings.get("preflight_check_texture_freshness", True))
@@ -1272,11 +1281,18 @@ class RaGPboBuilderApp(tk.Tk):
         binarize_addon_entry.grid(row=7, column=1, columnspan=2, sticky="nsew", pady=5, padx=(8, 0))
         binarize_addon_entry.insert("1.0", self.binarize_addon_folders_var.get())
         ttk.Label(frame, text="Extra folders Binarize should scan for terrain object configs. Use one path per line.", foreground=GRAPHITE_MUTED, wraplength=520).grid(row=8, column=1, columnspan=2, sticky="w", padx=(8, 0), pady=(0, 6))
-        ttk.Label(frame, text="Exclude patterns").grid(row=9, column=0, sticky="nw", pady=5)
-        exclude_entry = tk.Text(frame, height=5, bg=GRAPHITE_FIELD, fg=GRAPHITE_TEXT, insertbackground=GRAPHITE_TEXT, selectbackground=GRAPHITE_ACCENT_DARK, selectforeground="#ffffff", relief="flat", borderwidth=0, highlightthickness=1, highlightbackground=GRAPHITE_BORDER, highlightcolor=GRAPHITE_ACCENT, font=("Segoe UI", 10))
-        exclude_entry.grid(row=9, column=1, columnspan=2, sticky="nsew", pady=5, padx=(8, 0))
-        exclude_entry.insert("1.0", self.exclude_patterns_var.get())
+        ttk.Label(frame, text="Exclude file extensions").grid(row=9, column=0, sticky="nw", pady=5)
+        exclude_extensions_entry = tk.Text(frame, height=3, bg=GRAPHITE_FIELD, fg=GRAPHITE_TEXT, insertbackground=GRAPHITE_TEXT, selectbackground=GRAPHITE_ACCENT_DARK, selectforeground="#ffffff", relief="flat", borderwidth=0, highlightthickness=1, highlightbackground=GRAPHITE_BORDER, highlightcolor=GRAPHITE_ACCENT, font=("Segoe UI", 10))
+        exclude_extensions_entry.grid(row=9, column=1, columnspan=2, sticky="nsew", pady=5, padx=(8, 0))
+        exclude_extensions_entry.insert("1.0", self.exclude_file_extensions_var.get())
+        ttk.Label(frame, text="Comma-separated extensions, for example: .hpp,.png,.psd", foreground=GRAPHITE_MUTED, wraplength=520).grid(row=10, column=1, columnspan=2, sticky="w", padx=(8, 0), pady=(0, 6))
+        ttk.Label(frame, text="Exclude folder names").grid(row=11, column=0, sticky="nw", pady=5)
+        exclude_folders_entry = tk.Text(frame, height=3, bg=GRAPHITE_FIELD, fg=GRAPHITE_TEXT, insertbackground=GRAPHITE_TEXT, selectbackground=GRAPHITE_ACCENT_DARK, selectforeground="#ffffff", relief="flat", borderwidth=0, highlightthickness=1, highlightbackground=GRAPHITE_BORDER, highlightcolor=GRAPHITE_ACCENT, font=("Segoe UI", 10))
+        exclude_folders_entry.grid(row=11, column=1, columnspan=2, sticky="nsew", pady=5, padx=(8, 0))
+        exclude_folders_entry.insert("1.0", self.exclude_folder_names_var.get())
+        ttk.Label(frame, text="Comma-separated names. Matching folders and everything inside them are ignored.", foreground=GRAPHITE_MUTED, wraplength=520).grid(row=12, column=1, columnspan=2, sticky="w", padx=(8, 0), pady=(0, 6))
         frame.rowconfigure(9, weight=1)
+        frame.rowconfigure(11, weight=1)
 
         post_build_frame = ttk.LabelFrame(container, text="Post-build", padding=14)
         post_build_frame.pack(fill="x", pady=(12, 0))
@@ -1422,7 +1438,8 @@ class RaGPboBuilderApp(tk.Tk):
         buttons.pack(fill="x", pady=(12, 0))
         def save_and_close():
             self.binarize_addon_folders_var.set(binarize_addon_entry.get("1.0", "end").strip())
-            self.exclude_patterns_var.set(exclude_entry.get("1.0", "end").strip())
+            self.exclude_file_extensions_var.set(exclude_extensions_entry.get("1.0", "end").strip())
+            self.exclude_folder_names_var.set(exclude_folders_entry.get("1.0", "end").strip())
             self.save_path_settings()
             close_options_window()
         tk.Button(buttons, text="Save", command=save_and_close, bg=GRAPHITE_ACCENT_DARK, fg="#ffffff", activebackground=GRAPHITE_ACCENT, activeforeground="#ffffff", relief="flat", borderwidth=0, padx=14, pady=8, font=("Segoe UI", 10, "bold"), cursor="hand2").pack(side="right")
@@ -1442,8 +1459,11 @@ class RaGPboBuilderApp(tk.Tk):
         if not source_root or not os.path.isdir(source_root):
             self.update_path_preset_dropdowns()
             return
-        exclude_pattern_list = parse_exclude_patterns(self.exclude_patterns_var.get())
-        self.current_addon_targets = detect_addon_targets(source_root, output_addons_dir, exclude_pattern_list)
+        exclusion_rules = get_exclusion_rules({
+            "exclude_file_extensions": self.exclude_file_extensions_var.get(),
+            "exclude_folder_names": self.exclude_folder_names_var.get(),
+        })
+        self.current_addon_targets = detect_addon_targets(source_root, output_addons_dir, exclusion_rules)
         for name, _ in self.current_addon_targets:
             self.addon_listbox.insert("end", name)
         names = [name for name, _ in self.current_addon_targets]
@@ -1501,7 +1521,8 @@ class RaGPboBuilderApp(tk.Tk):
             "project_root": self.project_root_var.get().strip(),
             "temp_dir": self.temp_dir_var.get().strip(),
             "binarize_addon_folders": self.binarize_addon_folders_var.get().strip(),
-            "exclude_patterns": self.exclude_patterns_var.get().strip(),
+            "exclude_file_extensions": self.exclude_file_extensions_var.get().strip(),
+            "exclude_folder_names": self.exclude_folder_names_var.get().strip(),
             "log_filter": self.log_filter_var.get().strip() if hasattr(self, "log_filter_var") else "All",
             "preflight_check_required_addons_hints": bool(self.preflight_check_required_addons_hints_var.get()) if hasattr(self, "preflight_check_required_addons_hints_var") else True,
             "preflight_check_texture_freshness": bool(self.preflight_check_texture_freshness_var.get()) if hasattr(self, "preflight_check_texture_freshness_var") else True,
@@ -1607,7 +1628,8 @@ class RaGPboBuilderApp(tk.Tk):
             "project_root": self.project_root_var.get().strip() or DEFAULT_PROJECT_ROOT,
             "temp_dir": self.temp_dir_var.get().strip() or DEFAULT_TEMP_DIR,
             "binarize_addon_folders": self.binarize_addon_folders_var.get().strip(),
-            "exclude_patterns": self.exclude_patterns_var.get().strip(),
+            "exclude_file_extensions": self.exclude_file_extensions_var.get().strip(),
+            "exclude_folder_names": self.exclude_folder_names_var.get().strip(),
             "preflight_check_required_addons_hints": bool(self.preflight_check_required_addons_hints_var.get()),
             "preflight_check_texture_freshness": bool(self.preflight_check_texture_freshness_var.get()),
             "preflight_check_risky_paths": bool(self.preflight_check_risky_paths_var.get()),
@@ -1703,7 +1725,8 @@ class RaGPboBuilderApp(tk.Tk):
             "project_root": self.project_root_var.get().strip() or DEFAULT_PROJECT_ROOT,
             "temp_dir": self.temp_dir_var.get().strip() or DEFAULT_TEMP_DIR,
             "binarize_addon_folders": self.binarize_addon_folders_var.get().strip(),
-            "exclude_patterns": self.exclude_patterns_var.get().strip(),
+            "exclude_file_extensions": self.exclude_file_extensions_var.get().strip(),
+            "exclude_folder_names": self.exclude_folder_names_var.get().strip(),
             "max_processes": max_processes,
             "selected_addons": selected,
             "log_file": str(create_build_log_path()),

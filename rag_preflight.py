@@ -11,7 +11,7 @@ from rag_builder_common import (
     get_pbo_prefix,
     get_safe_temp_name,
     normalize_working_dir,
-    parse_exclude_patterns,
+    get_exclusion_rules,
     run_hidden_text_subprocess,
     try_relpath,
     should_skip_dir,
@@ -2577,7 +2577,7 @@ def run_preflight_for_targets(settings, targets, log, progress_callback=None):
     start = time.time()
     result = PreflightResult()
     project_root = settings.get("project_root", DEFAULT_PROJECT_ROOT)
-    extra_patterns = parse_exclude_patterns(settings.get("exclude_patterns", ""))
+    extra_patterns = get_exclusion_rules(settings)
     preflight_checks = get_preflight_check_settings(settings)
 
     log("")

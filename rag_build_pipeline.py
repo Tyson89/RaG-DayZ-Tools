@@ -18,7 +18,8 @@ from rag_builder_common import (
     get_pbo_prefix,
     get_safe_temp_name,
     normalize_working_dir,
-    parse_exclude_patterns,
+    get_exclusion_rules,
+    get_exclusion_setting_values,
     read_pbo_prefix_file,
     run_hidden_text_subprocess,
     should_skip_dir,
@@ -1353,9 +1354,9 @@ def clear_full_temp_folder(temp_root, log, source_root="", output_root=""):
     log("Full temp cleanup finished.")
 
 
-def create_temp_exclude_file(temp_root, raw_patterns, log):
-    if parse_exclude_patterns(raw_patterns):
-        log("Using exclude patterns internally only. No generated exclude.lst will be created.")
+def create_temp_exclude_file(temp_root, exclusion_rules, log):
+    if exclusion_rules["file_extensions"] or exclusion_rules["folder_names"]:
+        log("Using file extension and folder exclusions internally. No generated exclude.lst will be created.")
     return ""
 
 
@@ -1408,7 +1409,8 @@ def compute_addon_state_hash(source_dir, prefix, settings, extra_patterns=None, 
         "convert_config": bool(settings["convert_config"]),
         "sign_pbos": bool(settings["sign_pbos"]),
         "project_root": settings["project_root"],
-        "exclude_patterns": settings["exclude_patterns"],
+        "exclude_file_extensions": get_exclusion_setting_values(settings)[0],
+        "exclude_folder_names": get_exclusion_setting_values(settings)[1],
         "max_processes": settings["max_processes"],
         "update_paa_from_sources": bool(settings.get("update_paa_from_sources", False)),
         "binarize_exe": file_fingerprint(settings.get("binarize_exe", ""), True, build_hash_cache),
@@ -1896,8 +1898,7 @@ def build_all(settings, log, progress_callback, cancel_callback=None):
     imagetopaa_exe = settings.get("imagetopaa_exe", "")
     dssignfile_exe = settings["dssignfile_exe"]
     private_key = settings["private_key"]
-    exclude_patterns = settings["exclude_patterns"]
-    exclude_pattern_list = parse_exclude_patterns(exclude_patterns)
+    exclusion_rules = get_exclusion_rules(settings)
     project_root = settings["project_root"]
     pbo_name = settings["pbo_name"]
     max_processes = settings["max_processes"]
@@ -1924,7 +1925,7 @@ def build_all(settings, log, progress_callback, cancel_callback=None):
         log("Configured Binarize addon scan folders:")
         for addon_folder in binarize_addon_folders:
             log(f"  - {addon_folder}")
-        exclude_file = create_temp_exclude_file(temp_root, exclude_patterns, log)
+        exclude_file = create_temp_exclude_file(temp_root, exclusion_rules, log)
         if not exclude_file:
             log("No exclude file will be passed to Binarize. Binarize uses the filtered staging folder instead.")
     if convert_config:
@@ -1944,7 +1945,7 @@ def build_all(settings, log, progress_callback, cancel_callback=None):
         log(f"Using private key: {os.path.basename(private_key)}")
 
     check_cancelled()
-    all_targets = detect_addon_targets(source_root, output_addons_dir, exclude_pattern_list)
+    all_targets = detect_addon_targets(source_root, output_addons_dir, exclusion_rules)
     targets = [(name, path) for name, path in all_targets if name in selected_addons] if selected_addons else []
     if not targets:
         raise BuildError("No addon targets selected.")
@@ -1976,7 +1977,7 @@ def build_all(settings, log, progress_callback, cancel_callback=None):
         log("=" * 80)
         log(f"Preparing addon {index}/{len(targets)}: {folder_name}")
         log("=" * 80)
-        invalid_proxies = find_invalid_p3d_proxy_references(folder_path, project_root, exclude_pattern_list)
+        invalid_proxies = find_invalid_p3d_proxy_references(folder_path, project_root, exclusion_rules)
         check_cancelled(jobs)
         if invalid_proxies:
             for issue in invalid_proxies:
@@ -1988,8 +1989,8 @@ def build_all(settings, log, progress_callback, cancel_callback=None):
             raise BuildError(f"Invalid P3D proxy path(s) found in {folder_name}: {len(invalid_proxies)}. Build aborted.")
         pbo_base_name = get_pbo_base_name(folder_name, pbo_name, len(targets))
         output_pbo = os.path.join(output_addons_dir, pbo_base_name + ".pbo")
-        prefix = get_effective_pbo_prefix(pbo_base_name, folder_path, project_root, exclude_pattern_list, log)
-        state_hash = compute_addon_state_hash(folder_path, prefix, settings, exclude_pattern_list, build_hash_cache)
+        prefix = get_effective_pbo_prefix(pbo_base_name, folder_path, project_root, exclusion_rules, log)
+        state_hash = compute_addon_state_hash(folder_path, prefix, settings, exclusion_rules, build_hash_cache)
         can_skip = (not force_rebuild and source_cache.get(folder_name, {}).get("hash") == state_hash and os.path.isfile(output_pbo) and (not sign_pbos or find_new_signature_for_pbo(output_pbo)))
         if can_skip:
             log(f"Skipping {folder_name} - no changes detected.")
@@ -2002,9 +2003,9 @@ def build_all(settings, log, progress_callback, cancel_callback=None):
                 if os.path.isdir(path):
                     shutil.rmtree(path)
                     log(f"Force rebuild: removed selected addon temp folder only: {path}")
-        folder_has_p3d = use_binarize and has_p3d_files(folder_path, exclude_pattern_list)
-        folder_has_binarizable_p3d = use_binarize and has_binarizable_p3d_files(folder_path, exclude_pattern_list)
-        folder_has_wrp = use_binarize and has_wrp_files(folder_path, exclude_pattern_list)
+        folder_has_p3d = use_binarize and has_p3d_files(folder_path, exclusion_rules)
+        folder_has_binarizable_p3d = use_binarize and has_binarizable_p3d_files(folder_path, exclusion_rules)
+        folder_has_wrp = use_binarize and has_wrp_files(folder_path, exclusion_rules)
         folder_needs_binarize = use_binarize and (folder_has_binarizable_p3d or folder_has_wrp)
         needs_staging = convert_config or folder_needs_binarize or update_paa_from_sources
         pack_source = folder_path
@@ -2013,7 +2014,7 @@ def build_all(settings, log, progress_callback, cancel_callback=None):
         if needs_staging:
             staging_dir = os.path.join(addon_temp_root, "staging")
             log("Copying source to staging folder...")
-            copy_source_to_staging(folder_path, staging_dir, exclude_pattern_list, log, True, folder_needs_binarize)
+            copy_source_to_staging(folder_path, staging_dir, exclusion_rules, log, True, folder_needs_binarize)
             check_cancelled(jobs)
             pack_source = staging_dir
         if folder_needs_binarize:
@@ -2037,10 +2038,10 @@ def build_all(settings, log, progress_callback, cancel_callback=None):
         try:
             check_cancelled()
             if update_paa_from_sources:
-                summary["paa_updates"] += update_staging_paa_from_source_textures(job["folder_path"], job["pack_source"], imagetopaa_exe, log, exclude_pattern_list)
+                summary["paa_updates"] += update_staging_paa_from_source_textures(job["folder_path"], job["pack_source"], imagetopaa_exe, log, exclusion_rules)
                 check_cancelled()
             if job["staging_dir"] and (job["folder_needs_binarize"] or convert_config):
-                ensure_config_include_files_in_staging(job["folder_path"], job["pack_source"], project_root, log, exclude_pattern_list)
+                ensure_config_include_files_in_staging(job["folder_path"], job["pack_source"], project_root, log, exclusion_rules)
                 check_cancelled()
             if use_binarize and job["folder_needs_binarize"]:
                 binarize_source = job["binarize_source"]
@@ -2054,27 +2055,27 @@ def build_all(settings, log, progress_callback, cancel_callback=None):
                     run_dayz_binarize(binarize_source, job["binarized_dir"], binarize_exe, project_root, temp_root, max_processes, exclude_file, log, job["folder_name"], binarize_addon_folders, job["folder_has_wrp"])
                     check_cancelled()
                     if job["folder_has_wrp"]:
-                        validate_binarized_wrp_outputs(job["staging_dir"], job["binarized_dir"], log, exclude_pattern_list)
+                        validate_binarized_wrp_outputs(job["staging_dir"], job["binarized_dir"], log, exclusion_rules)
                 finally:
                     cleanup_wrp_binarize_source(wrp_binarize_context, log)
                 log("Overlaying binarized files onto staging folder...")
                 overlay_tree(job["binarized_dir"], job["staging_dir"], None, log)
                 check_cancelled()
                 if job["folder_has_p3d"]:
-                    fallback_count = ensure_p3d_files_in_staging(job["folder_path"], job["staging_dir"], log, exclude_pattern_list)
+                    fallback_count = ensure_p3d_files_in_staging(job["folder_path"], job["staging_dir"], log, exclusion_rules)
                     summary["p3d_fallbacks"] += fallback_count
             if convert_config:
-                ensure_config_cpp_files_in_staging(job["folder_path"], job["pack_source"], log, exclude_pattern_list)
-                run_cfgconvert_to_bin(job["pack_source"], cfgconvert_exe, log, exclude_pattern_list)
+                ensure_config_cpp_files_in_staging(job["folder_path"], job["pack_source"], log, exclusion_rules)
+                run_cfgconvert_to_bin(job["pack_source"], cfgconvert_exe, log, exclusion_rules)
                 check_cancelled()
-            verify_pack_source_before_packing(job["folder_path"], job["pack_source"], convert_config, log, exclude_pattern_list)
+            verify_pack_source_before_packing(job["folder_path"], job["pack_source"], convert_config, log, exclusion_rules)
             check_cancelled()
             log(f"PBO Name:   {os.path.basename(job['output_pbo'])}")
             log(f"PBO prefix: {job['prefix']}")
-            pack_pbo(job["pack_source"], job["temp_output_pbo"], job["prefix"], log, exclude_pattern_list)
+            pack_pbo(job["pack_source"], job["temp_output_pbo"], job["prefix"], log, exclusion_rules)
             check_cancelled()
             verify_packed_pbo(job["temp_output_pbo"], job["prefix"], log)
-            verify_packed_wrp_entries(job["temp_output_pbo"], job["pack_source"], job["folder_path"], job["prefix"], project_root, exclude_pattern_list, log)
+            verify_packed_wrp_entries(job["temp_output_pbo"], job["pack_source"], job["folder_path"], job["prefix"], project_root, exclusion_rules, log)
             check_cancelled()
             if sign_pbos:
                 wait_for_file_ready(job["temp_output_pbo"], log)

@@ -15,6 +15,8 @@ class BuildCancelled(BuildError):
 EXCLUDE_DIRS = {".git", ".svn", ".vscode", ".idea", "__pycache__"}
 EXCLUDE_FILES = {".gitignore", ".gitattributes", "thumbs.db", "desktop.ini", ".ds_store", "$prefix$", "$pboprefix$", "$prefix$.txt", "$pboprefix$.txt"}
 EXCLUDE_EXTENSIONS = {".delete"}
+DEFAULT_EXCLUDE_FILE_EXTENSIONS = ".h,.hpp,.png,.cpp,.txt,.dep,.bak,.log,.pew,.tga,.bat,.psd,.cmd,.mcr,.fbx,.max"
+DEFAULT_EXCLUDE_FOLDER_NAMES = "source,temp"
 
 ZERO = bytes([0])
 WIN_SEP = chr(92)
@@ -36,6 +38,62 @@ def parse_exclude_patterns(raw_patterns):
     return [item.strip() for item in raw_patterns.split(",") if item.strip()]
 
 
+def parse_exclude_file_extensions(raw_extensions):
+    result = []
+    for item in parse_exclude_patterns(raw_extensions):
+        value = item.lower()
+        if value.startswith("*."):
+            value = value[1:]
+        elif not value.startswith("."):
+            value = "." + value
+        if value.count(".") == 1 and value not in result:
+            result.append(value)
+    return result
+
+
+def parse_exclude_folder_names(raw_folder_names):
+    result = []
+    for item in parse_exclude_patterns(raw_folder_names):
+        value = item.lower()
+        if value not in result:
+            result.append(value)
+    return result
+
+
+def get_exclusion_setting_values(settings):
+    legacy_patterns = parse_exclude_patterns(settings.get("exclude_patterns", ""))
+
+    if "exclude_file_extensions" in settings:
+        file_extensions = str(settings.get("exclude_file_extensions", "")).strip()
+    elif legacy_patterns:
+        file_extensions = ",".join(
+            pattern[1:] for pattern in legacy_patterns if pattern.startswith("*.") and pattern.count(".") == 1
+        )
+    else:
+        file_extensions = DEFAULT_EXCLUDE_FILE_EXTENSIONS
+
+    if "exclude_folder_names" in settings:
+        folder_names = str(settings.get("exclude_folder_names", "")).strip()
+    else:
+        legacy_folders = [
+            pattern for pattern in legacy_patterns
+            if not any(char in pattern for char in "*?[]") and "." not in pattern
+        ]
+        folder_names = ",".join(dict.fromkeys(parse_exclude_folder_names(
+            DEFAULT_EXCLUDE_FOLDER_NAMES + "," + ",".join(legacy_folders)
+        )))
+
+    return file_extensions, folder_names
+
+
+def get_exclusion_rules(settings):
+    file_extensions, folder_names = get_exclusion_setting_values(settings)
+    return {
+        "file_extensions": set(parse_exclude_file_extensions(file_extensions)),
+        "folder_names": set(parse_exclude_folder_names(folder_names)),
+    }
+
+
 def matches_exclude_pattern(name, patterns):
     if not patterns:
         return False
@@ -49,6 +107,8 @@ def matches_exclude_pattern(name, patterns):
 
 def should_skip_dir(dirname, extra_patterns=None):
     name = dirname.lower()
+    if isinstance(extra_patterns, dict):
+        return name in EXCLUDE_DIRS or name in extra_patterns.get("folder_names", set())
     return name in EXCLUDE_DIRS or matches_exclude_pattern(name, extra_patterns)
 
 
@@ -58,6 +118,8 @@ def should_skip_file(filename, extra_patterns=None):
         return False
     if name in EXCLUDE_FILES or os.path.splitext(name)[1].lower() in EXCLUDE_EXTENSIONS:
         return True
+    if isinstance(extra_patterns, dict):
+        return os.path.splitext(name)[1].lower() in extra_patterns.get("file_extensions", set())
     return matches_exclude_pattern(name, extra_patterns)
 
 
