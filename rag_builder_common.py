@@ -123,8 +123,8 @@ def should_skip_file(filename, extra_patterns=None):
     return matches_exclude_pattern(name, extra_patterns)
 
 
-def source_file_should_be_staged(filename, extra_patterns=None):
-    return filename.lower() == "config.cpp" or not should_skip_file(filename, extra_patterns)
+def source_file_should_be_staged(filename):
+    return not should_skip_file(filename)
 
 
 def get_subprocess_creationflags():

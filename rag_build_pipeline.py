@@ -272,7 +272,7 @@ def copy_source_to_staging(source_dir, staging_dir, extra_patterns=None, log=Non
 
         dirs[:] = [d for d in dirs if not should_skip_dir(d, extra_patterns)]
         for file in files:
-            if not source_file_should_be_staged(file, extra_patterns):
+            if not source_file_should_be_staged(file):
                 continue
             source_file = os.path.join(root, file)
             rel = try_relpath(source_file, source_dir)
@@ -1428,7 +1428,7 @@ def compute_addon_state_hash(source_dir, prefix, settings, extra_patterns=None, 
             ext = os.path.splitext(fname)[1].lower()
             is_paa_source = bool(settings.get("update_paa_from_sources", False)) and ext in PAA_SOURCE_TEXTURE_EXTENSIONS
 
-            if should_skip_file(fname, extra_patterns) and not is_paa_source:
+            if should_skip_file(fname) and not is_paa_source:
                 continue
 
             full = os.path.join(root, fname)
