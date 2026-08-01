@@ -623,6 +623,63 @@ def iter_config_sanity_issues(content):
         yield line_number, "Possible missing semicolon after closing brace. Config blocks usually close with `};`."
 
 
+def iter_config_class_scopes(content, base_offset=0):
+    for class_name, _, class_body, class_start, _ in iter_class_blocks(content):
+        class_open = content.find("{", class_start)
+        body_offset = base_offset + class_open + 1
+        yield class_name, class_body, body_offset
+        yield from iter_config_class_scopes(class_body, body_offset)
+
+
+def iter_duplicate_config_attributes(content):
+    clean = strip_cpp_comments(content, preserve_lines=True)
+    assignment_pattern = re.compile(r"\b([A-Za-z_][A-Za-z0-9_]*)\s*(?:\[\s*\])?\s*(\+?=)")
+
+    for class_name, class_body, body_offset in iter_config_class_scopes(clean):
+        attributes = {}
+        depth = 0
+        in_string = ""
+        escaped = False
+        scan_position = 0
+
+        for match in assignment_pattern.finditer(class_body):
+            for char in class_body[scan_position:match.start()]:
+                if in_string:
+                    if escaped:
+                        escaped = False
+                    elif char == "\\":
+                        escaped = True
+                    elif char == in_string:
+                        in_string = ""
+                    continue
+
+                if char in {'"', "'"}:
+                    in_string = char
+                elif char == "{":
+                    depth += 1
+                elif char == "}" and depth > 0:
+                    depth -= 1
+
+            scan_position = match.end()
+
+            if in_string or depth != 0 or match.group(2) == "+=":
+                continue
+
+            previous = get_previous_nonspace_char(class_body, match.start())
+
+            if previous not in {"", ";"}:
+                continue
+
+            attribute_name = match.group(1)
+            key = attribute_name.lower()
+            line_number = get_line_number_from_index(clean, body_offset + match.start(1))
+
+            if key in attributes:
+                yield line_number, class_name, attribute_name, attributes[key]
+            else:
+                attributes[key] = line_number
+
+
 def preflight_check_config_text_sanity(config_cpp, result, log, addon_source_dir=""):
     config_label = format_config_path(config_cpp, addon_source_dir)
 
@@ -640,6 +697,14 @@ def preflight_check_config_text_sanity(config_cpp, result, log, addon_source_dir
             continue
         reported.add(key)
         result.warning(log, f"Config sanity warning in {config_label}: line {line_number}: {message}")
+
+    for line_number, class_name, attribute_name, first_line in iter_duplicate_config_attributes(content):
+        source_location = format_source_location(config_cpp, addon_source_dir, line_number)
+        result.error(
+            log,
+            f"Duplicate config attribute in {source_location}: class {class_name} defines {attribute_name} more than once "
+            f"(first definition at line {first_line}).",
+        )
 
 
 def preflight_check_config_cpp(config_cpp, cfgconvert_exe, temp_root, addon_name, result, log, addon_source_dir=""):
