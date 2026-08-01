@@ -2,6 +2,7 @@
 
 ## 1.0.2
 
+- Added a Preflight option to disable referenced-file path checks while keeping structural and script validation active.
 - Installer now lets users choose every optional tool, keeps the updater required, and offers unchecked desktop shortcuts for all installed tools.
 - Added profile-backed mod package generation for `mod.cpp`, PAA branding, README copying, built-in or custom licenses, and one-shot semantic version bumps.
 - Added preflight errors for duplicate attribute assignments within the same config class.

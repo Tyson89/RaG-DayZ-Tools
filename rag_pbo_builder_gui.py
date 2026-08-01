@@ -78,7 +78,7 @@ APP_ICON_FILE = os.path.join("assets", "installer.ico")
 
 DEFAULT_TEMP_DIR = str(Path("P:/Temp"))
 DEFAULT_PROJECT_ROOT = "P:"
-PROFILE_SCHEMA_VERSION = 3
+PROFILE_SCHEMA_VERSION = 4
 DEFAULT_PROFILE_NAME = "Default"
 PROFILE_DEFAULT_SETTINGS = {
     "source_root": "",
@@ -110,6 +110,7 @@ PROFILE_DEFAULT_SETTINGS = {
     "exclude_file_extensions": DEFAULT_EXCLUDE_FILE_EXTENSIONS,
     "exclude_folder_names": DEFAULT_EXCLUDE_FOLDER_NAMES,
     "preflight_check_required_addons_hints": True,
+    "preflight_check_file_paths": True,
     "preflight_check_texture_freshness": True,
     "preflight_check_risky_paths": True,
     "preflight_check_case_conflicts": True,
@@ -153,6 +154,7 @@ PROFILE_VAR_FIELDS = {
     "exclude_file_extensions": "exclude_file_extensions_var",
     "exclude_folder_names": "exclude_folder_names_var",
     "preflight_check_required_addons_hints": "preflight_check_required_addons_hints_var",
+    "preflight_check_file_paths": "preflight_check_file_paths_var",
     "preflight_check_texture_freshness": "preflight_check_texture_freshness_var",
     "preflight_check_risky_paths": "preflight_check_risky_paths_var",
     "preflight_check_case_conflicts": "preflight_check_case_conflicts_var",
@@ -432,6 +434,7 @@ class RaGPboBuilderApp(tk.Tk):
         self.exclude_folder_names_var = tk.StringVar(value=exclude_folder_names)
         self.log_filter_var = tk.StringVar(value=self.saved_settings.get("log_filter", "All"))
         self.preflight_check_required_addons_hints_var = tk.BooleanVar(value=self.saved_settings.get("preflight_check_required_addons_hints", True))
+        self.preflight_check_file_paths_var = tk.BooleanVar(value=self.saved_settings.get("preflight_check_file_paths", True))
         self.preflight_check_texture_freshness_var = tk.BooleanVar(value=self.saved_settings.get("preflight_check_texture_freshness", True))
         self.preflight_check_risky_paths_var = tk.BooleanVar(value=self.saved_settings.get("preflight_check_risky_paths", True))
         self.preflight_check_case_conflicts_var = tk.BooleanVar(value=self.saved_settings.get("preflight_check_case_conflicts", True))
@@ -1456,6 +1459,14 @@ class RaGPboBuilderApp(tk.Tk):
         )
         self._add_checkbutton(
             preflight_frame,
+            "File path checks",
+            self.preflight_check_file_paths_var,
+            2,
+            0,
+            "Check that files referenced by configs, scripts, RVMATs, sound shaders, and P3Ds exist and will be packed.",
+        )
+        self._add_checkbutton(
+            preflight_frame,
             "P3D internal scan",
             self.preflight_check_p3d_internal_var,
             1,
@@ -1647,6 +1658,7 @@ class RaGPboBuilderApp(tk.Tk):
             "exclude_folder_names": self.exclude_folder_names_var.get().strip(),
             "log_filter": self.log_filter_var.get().strip() if hasattr(self, "log_filter_var") else "All",
             "preflight_check_required_addons_hints": bool(self.preflight_check_required_addons_hints_var.get()) if hasattr(self, "preflight_check_required_addons_hints_var") else True,
+            "preflight_check_file_paths": bool(self.preflight_check_file_paths_var.get()) if hasattr(self, "preflight_check_file_paths_var") else True,
             "preflight_check_texture_freshness": bool(self.preflight_check_texture_freshness_var.get()) if hasattr(self, "preflight_check_texture_freshness_var") else True,
             "preflight_check_risky_paths": bool(self.preflight_check_risky_paths_var.get()) if hasattr(self, "preflight_check_risky_paths_var") else True,
             "preflight_check_case_conflicts": bool(self.preflight_check_case_conflicts_var.get()) if hasattr(self, "preflight_check_case_conflicts_var") else True,
@@ -1784,6 +1796,7 @@ class RaGPboBuilderApp(tk.Tk):
             "exclude_file_extensions": self.exclude_file_extensions_var.get().strip(),
             "exclude_folder_names": self.exclude_folder_names_var.get().strip(),
             "preflight_check_required_addons_hints": bool(self.preflight_check_required_addons_hints_var.get()),
+            "preflight_check_file_paths": bool(self.preflight_check_file_paths_var.get()),
             "preflight_check_texture_freshness": bool(self.preflight_check_texture_freshness_var.get()),
             "preflight_check_risky_paths": bool(self.preflight_check_risky_paths_var.get()),
             "preflight_check_case_conflicts": bool(self.preflight_check_case_conflicts_var.get()),
@@ -1896,6 +1909,7 @@ class RaGPboBuilderApp(tk.Tk):
             "selected_addons": selected,
             "log_file": str(create_build_log_path()),
             "preflight_check_required_addons_hints": bool(self.preflight_check_required_addons_hints_var.get()),
+            "preflight_check_file_paths": bool(self.preflight_check_file_paths_var.get()),
             "preflight_check_texture_freshness": bool(self.preflight_check_texture_freshness_var.get()),
             "preflight_check_risky_paths": bool(self.preflight_check_risky_paths_var.get()),
             "preflight_check_case_conflicts": bool(self.preflight_check_case_conflicts_var.get()),

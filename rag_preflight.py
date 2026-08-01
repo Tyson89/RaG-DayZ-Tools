@@ -1319,7 +1319,7 @@ def preflight_check_cfgmods(config_cpp, addon_name, addon_source_dir, project_ro
             result.warning(log, f"{folder} exists but is not referenced by {module_name} files[] in CfgMods: {addon_name}")
 
 
-def preflight_scan_references(file_path, addon_source_dir, project_root, extra_patterns, result, log, script_class_definitions=None, script_checks_enabled=True, sound_shader_classes=None):
+def preflight_scan_references(file_path, addon_source_dir, project_root, extra_patterns, result, log, script_class_definitions=None, script_checks_enabled=True, sound_shader_classes=None, file_path_checks_enabled=True):
     try:
         with open(file_path, "r", encoding="utf-8", errors="ignore") as file:
             content = file.read()
@@ -1342,6 +1342,7 @@ def preflight_scan_references(file_path, addon_source_dir, project_root, extra_p
             extra_patterns,
             result,
             log,
+            file_path_checks_enabled,
         )
         preflight_scan_sound_set_shaders(file_path, scan_content, addon_source_dir, sound_shader_classes, result, log)
 
@@ -1351,43 +1352,44 @@ def preflight_scan_references(file_path, addon_source_dir, project_root, extra_p
         preflight_scan_script_setactions_super(file_path, scan_content, addon_source_dir, result, log)
         collect_script_class_definitions(file_path, scan_content, addon_source_dir, script_class_definitions)
 
-    for match in REFERENCE_REGEX.finditer(scan_content):
-        if match.start(1) in sound_shader_reference_starts:
-            continue
+    if file_path_checks_enabled:
+        for match in REFERENCE_REGEX.finditer(scan_content):
+            if match.start(1) in sound_shader_reference_starts:
+                continue
 
-        ref = normalize_reference_path(match.group(1).strip())
-        ref_ext = os.path.splitext(ref)[1].lower()
-        line_start = scan_content.rfind("\n", 0, match.start()) + 1
-        line_prefix = scan_content[line_start:match.start()].strip().lower()
+            ref = normalize_reference_path(match.group(1).strip())
+            ref_ext = os.path.splitext(ref)[1].lower()
+            line_start = scan_content.rfind("\n", 0, match.start()) + 1
+            line_prefix = scan_content[line_start:match.start()].strip().lower()
 
-        if ext == ".c" and is_dynamic_script_reference(match, scan_content, ref):
-            continue
+            if ext == ".c" and is_dynamic_script_reference(match, scan_content, ref):
+                continue
 
-        # Config includes are build-time preprocessor inputs. They may be
-        # excluded from the final PBO while still being staged for Binarize
-        # and CfgConvert, so do not treat them as packed runtime references.
-        if ext in {".cpp", ".hpp", ".h", ".cfg"} and line_prefix == "#include":
-            continue
+            # Config includes are build-time preprocessor inputs. They may be
+            # excluded from the final PBO while still being staged for Binarize
+            # and CfgConvert, so do not treat them as packed runtime references.
+            if ext in {".cpp", ".hpp", ".h", ".cfg"} and line_prefix == "#include":
+                continue
 
-        # Terrain-specific config references are handled by the WRP/terrain checks
-        # so users do not get duplicate errors for worldName and road shape paths.
-        if ext == ".cpp" and ref_ext in {".wrp", ".shp", ".dbf", ".shx", ".prj"}:
-            continue
+            # Terrain-specific config references are handled by the WRP/terrain checks
+            # so users do not get duplicate errors for worldName and road shape paths.
+            if ext == ".cpp" and ref_ext in {".wrp", ".shp", ".dbf", ".shx", ".prj"}:
+                continue
 
-        key = ref.lower()
-        line_number = get_line_number_from_index(scan_content, match.start(1))
+            key = ref.lower()
+            line_number = get_line_number_from_index(scan_content, match.start(1))
 
-        if key in seen:
-            continue
+            if key in seen:
+                continue
 
-        seen.add(key)
-        report_reference_status(ref, file_path, addon_source_dir, project_root, extra_patterns, result, log, "error", "referenced file", line_number)
+            seen.add(key)
+            report_reference_status(ref, file_path, addon_source_dir, project_root, extra_patterns, result, log, "error", "referenced file", line_number)
 
-    if ext == ".rvmat":
-        preflight_scan_rvmat_textures(file_path, scan_content, addon_source_dir, project_root, extra_patterns, result, log, seen)
+        if ext == ".rvmat":
+            preflight_scan_rvmat_textures(file_path, scan_content, addon_source_dir, project_root, extra_patterns, result, log, seen)
 
 
-def preflight_scan_sound_shader_samples(file_path, content, addon_source_dir, project_root, extra_patterns, result, log):
+def preflight_scan_sound_shader_samples(file_path, content, addon_source_dir, project_root, extra_patterns, result, log, file_path_checks_enabled=True):
     reference_starts = set()
     cfg_pattern = re.compile(r"\bclass\s+CfgSoundShaders\b[^;{]*\{", re.IGNORECASE)
     position = 0
@@ -1442,17 +1444,18 @@ def preflight_scan_sound_shader_samples(file_path, content, addon_source_dir, pr
                         continue
 
                     reference_starts.add(path_index)
-                    line_number = get_line_number_from_index(content, path_index)
-                    report_sound_sample_status(
-                        sound_path,
-                        file_path,
-                        addon_source_dir,
-                        project_root,
-                        extra_patterns,
-                        result,
-                        log,
-                        line_number,
-                    )
+                    if file_path_checks_enabled:
+                        line_number = get_line_number_from_index(content, path_index)
+                        report_sound_sample_status(
+                            sound_path,
+                            file_path,
+                            addon_source_dir,
+                            project_root,
+                            extra_patterns,
+                            result,
+                            log,
+                            line_number,
+                        )
 
         position = cfg_close + 1
 
@@ -2878,6 +2881,7 @@ def preflight_scan_wrp_internal_references(wrp_file, addon_source_dir, project_r
 def get_preflight_check_settings(settings):
     return {
         "required_addons_hints": bool(settings.get("preflight_check_required_addons_hints", True)),
+        "file_paths": bool(settings.get("preflight_check_file_paths", True)),
         "texture_freshness": bool(settings.get("preflight_check_texture_freshness", True)),
         "risky_paths": bool(settings.get("preflight_check_risky_paths", True)),
         "case_conflicts": bool(settings.get("preflight_check_case_conflicts", True)),
@@ -2984,6 +2988,9 @@ def run_preflight_for_targets(settings, targets, log, progress_callback=None):
     log("=" * 80)
     log("DayZ Preflight Check")
     log("=" * 80)
+
+    if not preflight_checks["file_paths"]:
+        result.note(log, "Referenced-file path checks disabled.")
 
     dependency_infos = collect_selected_addon_dependency_infos(targets, extra_patterns, project_root)
     selected_script_files = []
@@ -3106,8 +3113,8 @@ def run_preflight_for_targets(settings, targets, log, progress_callback=None):
                             })
                         except Exception:
                             pass
-                    preflight_scan_references(full, addon_source_dir, project_root, extra_patterns, result, log, script_class_definitions, preflight_checks["script_checks"], sound_shader_classes)
-                elif ext == ".p3d" and preflight_checks["p3d_internal"]:
+                    preflight_scan_references(full, addon_source_dir, project_root, extra_patterns, result, log, script_class_definitions, preflight_checks["script_checks"], sound_shader_classes, preflight_checks["file_paths"])
+                elif ext == ".p3d" and preflight_checks["p3d_internal"] and preflight_checks["file_paths"]:
                     preflight_scan_p3d_internal_references(full, addon_source_dir, project_root, extra_patterns, result, log)
 
         flush_terrain_layer_source_texture_warnings(addon_name, result, log)
