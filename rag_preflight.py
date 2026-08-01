@@ -50,6 +50,7 @@ P3D_INTERNAL_REFERENCE_REGEX = re.compile(
 P3D_PROXY_REFERENCE_REGEX = re.compile(rb"proxy:\\([^\x00\r\n]{1,1024})", re.IGNORECASE)
 PREFLIGHT_TEXT_EXTENSIONS = (".cpp", ".hpp", ".h", ".rvmat", ".cfg", ".c", ".xml", ".json", ".layout", ".imageset")
 RISKY_REFERENCE_EXTENSIONS = {".paa", ".rvmat", ".p3d", ".wss", ".ogg", ".wav", ".emat", ".edds", ".ptc", ".bisurf"}
+SOUND_SAMPLE_FILE_EXTENSIONS = (".ogg", ".wss", ".wav")
 SOURCE_TEXTURE_EXTENSIONS = {".png", ".tga", ".psd"}
 MODDED_CLASS_INHERITANCE_REGEX = re.compile(
     r"^\s*modded\s+class\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:(extends)\s+([A-Za-z_][A-Za-z0-9_]*)|(:)\s*([A-Za-z_][A-Za-z0-9_]*))",
@@ -65,6 +66,19 @@ SCRIPT_SETACTIONS_METHOD_REGEX = re.compile(
 )
 SCRIPT_SUPER_SETACTIONS_REGEX = re.compile(r"\bsuper\s*\.\s*SetActions\s*\(", re.IGNORECASE)
 SCRIPT_RUNTIME_FORMAT_PLACEHOLDER_REGEX = re.compile(r"(?<!%)%(?:[1-9][0-9]*|[sdif])", re.IGNORECASE)
+SOUND_SHADER_SAMPLES_REGEX = re.compile(
+    r"\bsamples\s*\[\s*\]\s*\+?=\s*\{(.*?)\}\s*;",
+    re.IGNORECASE | re.DOTALL,
+)
+SOUND_SHADER_SAMPLE_ENTRY_REGEX = re.compile(
+    r"\{\s*(?:\"(?P<double>[^\"]*)\"|'(?P<single>[^']*)'|(?P<bare>[^,{}]*))\s*,",
+    re.DOTALL,
+)
+SOUND_SET_SOUND_SHADERS_REGEX = re.compile(
+    r"\bsoundShaders\s*\[\s*\]\s*\+?=\s*\{(.*?)\}\s*;",
+    re.IGNORECASE | re.DOTALL,
+)
+CONFIG_QUOTED_VALUE_REGEX = re.compile(r"[\"']([^\"']+)[\"']")
 
 SCRIPT_MODULE_FOLDERS = {
     "engineScriptModule": "scripts/1_Core",
@@ -302,16 +316,16 @@ def resolve_reference_path(reference, addon_source_dir, project_root):
 def format_source_location(source_file, addon_source_dir, line_number=0):
     if source_file:
         try:
-            rel_file = os.path.relpath(source_file, addon_source_dir).replace(os.sep, WIN_SEP)
+            display_file = os.path.abspath(source_file)
         except Exception:
-            rel_file = str(source_file)
+            display_file = str(source_file)
     else:
-        rel_file = "<unknown>"
+        display_file = "<unknown>"
 
     if line_number and line_number > 0:
-        return f"{rel_file}: line {line_number}"
+        return f"{display_file}: line {line_number}"
 
-    return rel_file
+    return display_file
 
 
 def get_previous_nonspace_char(content, index):
@@ -405,6 +419,36 @@ def report_reference_status(reference, source_file, addon_source_dir, project_ro
 
         if path_would_be_excluded(rel_resolved, extra_patterns):
             result.error(log, f"Referenced file exists but is excluded from the packed PBO in {source_location}: {ref} -> {rel_resolved}")
+
+
+def report_sound_sample_status(reference, source_file, addon_source_dir, project_root, extra_patterns, result, log, line_number=0):
+    ref = normalize_reference_path(reference)
+
+    if not ref:
+        return
+
+    candidates = [ref] if os.path.splitext(ref)[1] else [ref + extension for extension in SOUND_SAMPLE_FILE_EXTENSIONS]
+    resolved = ""
+
+    for candidate in candidates:
+        candidate_resolved, status = resolve_reference_path(candidate, addon_source_dir, project_root)
+
+        if status == "ok":
+            resolved = candidate_resolved
+            break
+
+    result.checked_references += 1
+    source_location = format_source_location(source_file, addon_source_dir, line_number)
+
+    if not resolved:
+        result.error(log, f"Missing CfgSoundShaders sample in {source_location}: {ref}")
+        return
+
+    if is_path_inside(resolved, addon_source_dir):
+        rel_resolved = os.path.relpath(resolved, addon_source_dir).replace(os.sep, WIN_SEP)
+
+        if path_would_be_excluded(rel_resolved, extra_patterns):
+            result.error(log, f"CfgSoundShaders sample exists but is excluded from the packed PBO in {source_location}: {ref} -> {rel_resolved}")
 
 
 def collect_config_cpp_files(source_dir, extra_patterns=None):
@@ -1210,7 +1254,7 @@ def preflight_check_cfgmods(config_cpp, addon_name, addon_source_dir, project_ro
             result.warning(log, f"{folder} exists but is not referenced by {module_name} files[] in CfgMods: {addon_name}")
 
 
-def preflight_scan_references(file_path, addon_source_dir, project_root, extra_patterns, result, log, script_class_definitions=None, script_checks_enabled=True):
+def preflight_scan_references(file_path, addon_source_dir, project_root, extra_patterns, result, log, script_class_definitions=None, script_checks_enabled=True, sound_shader_classes=None):
     try:
         with open(file_path, "r", encoding="utf-8", errors="ignore") as file:
             content = file.read()
@@ -1222,6 +1266,19 @@ def preflight_scan_references(file_path, addon_source_dir, project_root, extra_p
     seen = set()
     ext = os.path.splitext(file_path)[1].lower()
     scan_content = strip_cpp_comments(content, preserve_lines=True) if ext in {".cpp", ".hpp", ".h", ".c", ".cfg", ".rvmat"} else content
+    sound_shader_reference_starts = set()
+
+    if ext in {".cpp", ".hpp", ".h", ".cfg"}:
+        sound_shader_reference_starts = preflight_scan_sound_shader_samples(
+            file_path,
+            scan_content,
+            addon_source_dir,
+            project_root,
+            extra_patterns,
+            result,
+            log,
+        )
+        preflight_scan_sound_set_shaders(file_path, scan_content, addon_source_dir, sound_shader_classes, result, log)
 
     if ext == ".c" and script_checks_enabled:
         preflight_scan_script_sanity(file_path, content, addon_source_dir, result, log)
@@ -1230,6 +1287,9 @@ def preflight_scan_references(file_path, addon_source_dir, project_root, extra_p
         collect_script_class_definitions(file_path, scan_content, addon_source_dir, script_class_definitions)
 
     for match in REFERENCE_REGEX.finditer(scan_content):
+        if match.start(1) in sound_shader_reference_starts:
+            continue
+
         ref = normalize_reference_path(match.group(1).strip())
         ref_ext = os.path.splitext(ref)[1].lower()
         line_start = scan_content.rfind("\n", 0, match.start()) + 1
@@ -1260,6 +1320,281 @@ def preflight_scan_references(file_path, addon_source_dir, project_root, extra_p
 
     if ext == ".rvmat":
         preflight_scan_rvmat_textures(file_path, scan_content, addon_source_dir, project_root, extra_patterns, result, log, seen)
+
+
+def preflight_scan_sound_shader_samples(file_path, content, addon_source_dir, project_root, extra_patterns, result, log):
+    reference_starts = set()
+    cfg_pattern = re.compile(r"\bclass\s+CfgSoundShaders\b[^;{]*\{", re.IGNORECASE)
+    position = 0
+
+    while True:
+        cfg_match = cfg_pattern.search(content, position)
+
+        if not cfg_match:
+            break
+
+        cfg_open = content.find("{", cfg_match.start())
+        cfg_close = find_matching_brace(content, cfg_open)
+
+        if cfg_close < 0:
+            position = cfg_match.end()
+            continue
+
+        cfg_body = content[cfg_open + 1:cfg_close]
+
+        for class_name, base_class, class_body, class_start, _ in iter_class_blocks(cfg_body):
+            class_open = cfg_body.find("{", class_start)
+            class_body_offset = cfg_open + 1 + class_open + 1
+            samples_matches = list(SOUND_SHADER_SAMPLES_REGEX.finditer(class_body))
+
+            if not samples_matches:
+                continue
+
+            for samples_match in samples_matches:
+                samples_body = samples_match.group(1)
+                entry_matches = list(SOUND_SHADER_SAMPLE_ENTRY_REGEX.finditer(samples_body))
+
+                if not entry_matches:
+                    line_number = get_line_number_from_index(content, class_body_offset + samples_match.start())
+                    source_location = format_source_location(file_path, addon_source_dir, line_number)
+                    result.error(log, f"CfgSoundShaders samples[] has no sound path in {source_location}: {class_name}")
+                    continue
+
+                for entry_match in entry_matches:
+                    quoted_group = "double" if entry_match.group("double") is not None else "single" if entry_match.group("single") is not None else ""
+                    raw_path = entry_match.group(quoted_group) if quoted_group else entry_match.group("bare")
+                    path_offset = entry_match.start(quoted_group) if quoted_group else entry_match.start("bare")
+                    path_index = class_body_offset + samples_match.start(1) + path_offset
+                    sound_path = normalize_reference_path(raw_path)
+
+                    if not sound_path:
+                        line_number = get_line_number_from_index(content, path_index)
+                        source_location = format_source_location(file_path, addon_source_dir, line_number)
+                        result.error(log, f"CfgSoundShaders sample has no sound path in {source_location}: {class_name}")
+                        continue
+
+                    if not quoted_group:
+                        continue
+
+                    reference_starts.add(path_index)
+                    line_number = get_line_number_from_index(content, path_index)
+                    report_sound_sample_status(
+                        sound_path,
+                        file_path,
+                        addon_source_dir,
+                        project_root,
+                        extra_patterns,
+                        result,
+                        log,
+                        line_number,
+                    )
+
+        position = cfg_close + 1
+
+    return reference_starts
+
+
+def collect_cfg_sound_shader_classes(addon_source_dir, extra_patterns=None):
+    classes = set()
+    found_cfg_sound_shaders = False
+    cfg_pattern = re.compile(r"\bclass\s+CfgSoundShaders\b[^;{]*\{", re.IGNORECASE)
+    class_pattern = re.compile(r"\bclass\s+([A-Za-z_][A-Za-z0-9_]*)\b")
+
+    for root, dirs, files in os.walk(addon_source_dir):
+        dirs[:] = [directory for directory in dirs if not should_skip_dir(directory, extra_patterns)]
+
+        for file in files:
+            if os.path.splitext(file)[1].lower() not in {".cpp", ".hpp", ".h", ".cfg"}:
+                continue
+
+            try:
+                content = Path(os.path.join(root, file)).read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                continue
+
+            content = strip_cpp_comments(content, preserve_lines=True)
+            position = 0
+
+            while True:
+                cfg_match = cfg_pattern.search(content, position)
+
+                if not cfg_match:
+                    break
+
+                cfg_open = content.find("{", cfg_match.start())
+                cfg_close = find_matching_brace(content, cfg_open)
+
+                if cfg_close < 0:
+                    position = cfg_match.end()
+                    continue
+
+                found_cfg_sound_shaders = True
+                cfg_body = content[cfg_open + 1:cfg_close]
+                classes.update(match.group(1).lower() for match in class_pattern.finditer(cfg_body))
+                position = cfg_close + 1
+
+    return classes if found_cfg_sound_shaders else None
+
+
+def collect_cfg_sound_set_shader_references(addon_source_dir, extra_patterns=None):
+    references = set()
+
+    for root, dirs, files in os.walk(addon_source_dir):
+        dirs[:] = [directory for directory in dirs if not should_skip_dir(directory, extra_patterns)]
+
+        for file in files:
+            if should_skip_file(file, extra_patterns) or os.path.splitext(file)[1].lower() not in {".cpp", ".hpp", ".h", ".cfg"}:
+                continue
+
+            try:
+                content = Path(os.path.join(root, file)).read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                continue
+
+            content = strip_cpp_comments(content, preserve_lines=True)
+
+            for shaders_match in SOUND_SET_SOUND_SHADERS_REGEX.finditer(content):
+                references.update(
+                    value_match.group(1).strip().lower()
+                    for value_match in CONFIG_QUOTED_VALUE_REGEX.finditer(shaders_match.group(1))
+                    if value_match.group(1).strip()
+                )
+
+    return references
+
+
+def find_cfg_sound_shader_classes_in_project(project_root, class_names, required_addons=None):
+    remaining = {name.lower() for name in class_names if name}
+
+    if not remaining or not project_root:
+        return set()
+
+    root_path = normalize_working_dir(project_root)
+
+    if not os.path.isdir(root_path):
+        return set()
+
+    found = set()
+    scanned_files = set()
+    class_pattern = re.compile(r"\bclass\s+([A-Za-z_][A-Za-z0-9_]*)\b", re.IGNORECASE)
+
+    def scan_roots(search_roots):
+        for search_root in search_roots:
+            if not os.path.isdir(search_root):
+                continue
+
+            for root, dirs, files in os.walk(search_root, onerror=lambda _error: None):
+                dirs[:] = [directory for directory in dirs if not should_skip_dir(directory)]
+
+                for file in files:
+                    if os.path.splitext(file)[1].lower() not in {".cpp", ".hpp", ".h", ".cfg"}:
+                        continue
+
+                    path = os.path.join(root, file)
+                    path_key = os.path.normcase(os.path.abspath(path))
+
+                    if path_key in scanned_files:
+                        continue
+
+                    scanned_files.add(path_key)
+
+                    try:
+                        content = Path(path).read_text(encoding="utf-8", errors="ignore")
+                    except OSError:
+                        continue
+
+                    for match in class_pattern.finditer(strip_cpp_comments(content)):
+                        key = match.group(1).lower()
+
+                        if key not in remaining:
+                            continue
+
+                        found.add(key)
+                        remaining.remove(key)
+
+                    if not remaining:
+                        return True
+
+        return False
+
+    required_roots = []
+    seen_roots = set()
+
+    for required_addon in required_addons or []:
+        parts = [part for part in re.split(r"[_\\/]", required_addon) if part]
+        candidates = [os.path.join(root_path, required_addon)]
+
+        if parts:
+            candidates.append(os.path.join(root_path, *parts))
+
+            if len(parts) > 1:
+                candidates.append(os.path.join(root_path, parts[0], "_".join(parts[1:])))
+
+        for candidate in candidates:
+            candidate_key = os.path.normcase(os.path.abspath(candidate))
+
+            if candidate_key in seen_roots or not os.path.isdir(candidate):
+                continue
+
+            seen_roots.add(candidate_key)
+            required_roots.append(candidate)
+
+    if scan_roots(required_roots):
+        return found
+
+    scan_roots([root_path])
+
+    return found
+
+
+def preflight_scan_sound_set_shaders(file_path, content, addon_source_dir, sound_shader_classes, result, log):
+    if sound_shader_classes is None:
+        return
+
+    cfg_pattern = re.compile(r"\bclass\s+CfgSoundSets\b[^;{]*\{", re.IGNORECASE)
+    position = 0
+
+    while True:
+        cfg_match = cfg_pattern.search(content, position)
+
+        if not cfg_match:
+            break
+
+        cfg_open = content.find("{", cfg_match.start())
+        cfg_close = find_matching_brace(content, cfg_open)
+
+        if cfg_close < 0:
+            position = cfg_match.end()
+            continue
+
+        cfg_body = content[cfg_open + 1:cfg_close]
+
+        for sound_set_name, _, class_body, class_start, _ in iter_class_blocks(cfg_body):
+            class_open = cfg_body.find("{", class_start)
+            class_body_offset = cfg_open + 1 + class_open + 1
+
+            for shaders_match in SOUND_SET_SOUND_SHADERS_REGEX.finditer(class_body):
+                for shader_match in CONFIG_QUOTED_VALUE_REGEX.finditer(shaders_match.group(1)):
+                    shader_name = shader_match.group(1).strip()
+
+                    if not shader_name:
+                        continue
+
+                    result.checked_references += 1
+
+                    if shader_name.lower() in sound_shader_classes:
+                        continue
+
+                    shader_index = class_body_offset + shaders_match.start(1) + shader_match.start(1)
+                    line_number = get_line_number_from_index(content, shader_index)
+                    source_location = format_source_location(file_path, addon_source_dir, line_number)
+                    result.error(
+                        log,
+                        f"CfgSoundSets class references missing CfgSoundShaders class in {source_location}: "
+                        f"{sound_set_name} -> {shader_name}",
+                    )
+
+        position = cfg_close + 1
 
 
 def preflight_scan_script_modded_classes(file_path, content, addon_source_dir, result, log):
@@ -2588,6 +2923,30 @@ def run_preflight_for_targets(settings, targets, log, progress_callback=None):
     dependency_infos = collect_selected_addon_dependency_infos(targets, extra_patterns, project_root)
     selected_script_files = []
     script_definitions_by_addon = {}
+    sound_shader_classes = set()
+    referenced_sound_shader_classes = set()
+
+    for _, addon_source_dir in targets:
+        addon_sound_shader_classes = collect_cfg_sound_shader_classes(addon_source_dir, extra_patterns)
+
+        if addon_sound_shader_classes is not None:
+            sound_shader_classes.update(addon_sound_shader_classes)
+
+        referenced_sound_shader_classes.update(collect_cfg_sound_set_shader_references(addon_source_dir, extra_patterns))
+
+    unresolved_sound_shader_classes = referenced_sound_shader_classes - sound_shader_classes
+
+    if unresolved_sound_shader_classes:
+        required_addons = {
+            required
+            for info in dependency_infos
+            for required in info.get("required_addons", [])
+        }
+        sound_shader_classes.update(find_cfg_sound_shader_classes_in_project(
+            project_root,
+            unresolved_sound_shader_classes,
+            required_addons,
+        ))
 
     if preflight_checks["required_addons_hints"]:
         preflight_check_selected_required_addons(dependency_infos, result, log)
@@ -2682,7 +3041,7 @@ def run_preflight_for_targets(settings, targets, log, progress_callback=None):
                             })
                         except Exception:
                             pass
-                    preflight_scan_references(full, addon_source_dir, project_root, extra_patterns, result, log, script_class_definitions, preflight_checks["script_checks"])
+                    preflight_scan_references(full, addon_source_dir, project_root, extra_patterns, result, log, script_class_definitions, preflight_checks["script_checks"], sound_shader_classes)
                 elif ext == ".p3d" and preflight_checks["p3d_internal"]:
                     preflight_scan_p3d_internal_references(full, addon_source_dir, project_root, extra_patterns, result, log)
 

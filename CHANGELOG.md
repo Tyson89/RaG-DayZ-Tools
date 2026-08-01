@@ -2,6 +2,7 @@
 
 ## 1.0.1
 
+- Added preflight validation for missing `CfgSoundShaders` sample paths, missing sound files, and undefined sound shaders referenced by `CfgSoundSets`, including DayZ's extensionless sound sample syntax, required-addon-first shader lookup with project-drive fallback, and double-click source navigation using unambiguous absolute paths and line-aware editor support.
 - Split exclusions into file-extension and recursive folder-name settings, with `source` and `temp` excluded as folders by default.
 - Kept extension-excluded build inputs available during Binarize and CfgConvert while excluding them from the final PBO.
 - Made excluded build-input changes invalidate the build cache.

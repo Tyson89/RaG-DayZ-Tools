@@ -2021,10 +2021,20 @@ class RaGPboBuilderApp(tk.Tk):
         self.log_text.tag_configure("log_section", foreground=GRAPHITE_MUTED)
         self.log_text.tag_configure("log_tool", foreground=GRAPHITE_PREFLIGHT_ACTIVE)
         self.log_text.tag_configure("log_info", foreground=GRAPHITE_MUTED)
+        self.log_text.bind("<Double-Button-1>", self.open_log_diagnostic)
 
     def resolve_diagnostic_source(self, line):
         if self.get_log_tag(line) not in {"log_error", "log_warning"}:
             return None
+        absolute_line = re.search(
+            r"(?P<path>[A-Za-z]:[\\/][^\r\n]*?\.(?:cpp|c|hpp|h|cfg|rvmat|layout|xml|json|p3d|wrp)):\s*line\s+(?P<line>\d+)",
+            line,
+            re.IGNORECASE,
+        )
+        if absolute_line:
+            resolved = self.resolve_source_path(absolute_line.group("path").strip())
+            if resolved:
+                return resolved, int(absolute_line.group("line"))
         match = re.search(r"(?P<label>[^:;]+):\s*line\s+(?P<line>\d+)", line, re.IGNORECASE)
         if match:
             candidate = match.group("label").strip()
@@ -2068,20 +2078,83 @@ class RaGPboBuilderApp(tk.Tk):
         self.log_text.tag_configure(link_tag, underline=True)
         self.log_text.tag_bind(link_tag, "<Enter>", lambda event: self.log_text.configure(cursor="hand2"))
         self.log_text.tag_bind(link_tag, "<Leave>", lambda event: self.log_text.configure(cursor="xterm"))
-        self.log_text.tag_bind(link_tag, "<Button-1>", lambda event, item=source: self.open_diagnostic_source(*item))
+
+    def open_log_diagnostic(self, event):
+        index = self.log_text.index(f"@{event.x},{event.y}")
+        line = self.log_text.get(f"{index} linestart", f"{index} lineend")
+        source = self.resolve_diagnostic_source(line)
+
+        if not source:
+            return None
+
+        self.open_diagnostic_source(*source)
+        return "break"
 
     def open_diagnostic_source(self, path, line_number=0):
         try:
-            code_exe = shutil.which("code")
-            if code_exe:
-                target = f"{path}:{line_number}" if line_number else path
-                subprocess.Popen([code_exe, "-g", target])
+            local_app_data = os.environ.get("LOCALAPPDATA", "")
+            program_files = os.environ.get("ProgramFiles", "")
+            editor_candidates = [
+                (shutil.which("code"), "code"),
+                (os.path.join(local_app_data, "Programs", "Microsoft VS Code", "Code.exe"), "code"),
+                (shutil.which("cursor"), "code"),
+                (os.path.join(local_app_data, "Programs", "Cursor", "Cursor.exe"), "code"),
+                (shutil.which("notepad++"), "notepad++"),
+                (os.path.join(program_files, "Notepad++", "notepad++.exe"), "notepad++"),
+                (shutil.which("subl"), "sublime"),
+                (os.path.join(program_files, "Sublime Text", "sublime_text.exe"), "sublime"),
+            ]
+
+            for executable, editor_type in editor_candidates:
+                if not executable or not os.path.isfile(executable):
+                    continue
+
+                if editor_type == "code":
+                    target = f"{path}:{line_number}" if line_number else path
+                    subprocess.Popen([executable, "-g", target])
+                elif editor_type == "notepad++":
+                    args = [executable]
+                    if line_number:
+                        args.append(f"-n{line_number}")
+                    args.append(path)
+                    subprocess.Popen(args)
+                else:
+                    target = f"{path}:{line_number}" if line_number else path
+                    subprocess.Popen([executable, target])
+                return
+
+            if line_number:
+                self.open_source_preview(path, line_number)
             elif os.name == "nt":
                 os.startfile(path)
             else:
                 subprocess.Popen(["xdg-open", path])
         except Exception as e:
             messagebox.showerror(APP_TITLE, str(e))
+
+    def open_source_preview(self, path, line_number):
+        content = Path(path).read_text(encoding="utf-8", errors="ignore")
+        viewer = tk.Toplevel(self)
+        viewer.title(f"{os.path.basename(path)} — line {line_number}")
+        viewer.geometry("1100x720")
+        frame = ttk.Frame(viewer, padding=8)
+        frame.pack(fill="both", expand=True)
+        frame.rowconfigure(0, weight=1)
+        frame.columnconfigure(0, weight=1)
+        text = tk.Text(frame, wrap="none", font=("Consolas", 10), bg=GRAPHITE_CARD, fg=GRAPHITE_TEXT, relief="flat")
+        text.grid(row=0, column=0, sticky="nsew")
+        y_scroll = ttk.Scrollbar(frame, orient="vertical", command=text.yview)
+        y_scroll.grid(row=0, column=1, sticky="ns")
+        x_scroll = ttk.Scrollbar(frame, orient="horizontal", command=text.xview)
+        x_scroll.grid(row=1, column=0, sticky="ew")
+        text.configure(yscrollcommand=y_scroll.set, xscrollcommand=x_scroll.set)
+        text.insert("1.0", content)
+        target = f"{max(1, line_number)}.0"
+        text.tag_configure("diagnostic_line", background=GRAPHITE_PREFLIGHT, foreground="#ffffff")
+        text.tag_add("diagnostic_line", target, f"{target} lineend")
+        text.mark_set("insert", target)
+        text.see(target)
+        text.configure(state="disabled")
 
     def get_log_tag(self, line):
         text = line.strip()
