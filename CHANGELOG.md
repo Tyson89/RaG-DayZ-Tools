@@ -2,6 +2,7 @@
 
 ## 1.0.1
 
+- Added profile-backed mod package generation for `mod.cpp`, PAA branding, README copying, built-in or custom licenses, and one-shot semantic version bumps.
 - Added preflight errors for duplicate attribute assignments within the same config class.
 - Added preflight validation for missing `CfgSoundShaders` sample paths, missing sound files, and undefined sound shaders referenced by `CfgSoundSets`, including DayZ's extensionless sound sample syntax, required-addon-first shader lookup with project-drive fallback, and double-click source navigation using unambiguous absolute paths and line-aware editor support.
 - Split exclusions into file-extension and recursive folder-name settings, with `source` and `temp` excluded as folders by default.

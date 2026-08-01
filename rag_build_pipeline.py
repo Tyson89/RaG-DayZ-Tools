@@ -51,6 +51,186 @@ PAA_SOURCE_TEXTURE_EXTENSIONS = {".png", ".tga"}
 WRP_SUSPICIOUS_SOURCE_SIZE = 1024 * 1024
 WRP_SUSPICIOUS_MIN_RATIO = 0.5
 DIAGNOSTIC_CONTEXT_LIMIT = 500
+MOD_VERSION_BUMP_OPTIONS = ("None", "Patch", "Minor", "Major")
+MOD_LICENSE_OPTIONS = ("None", "All Rights Reserved", "MIT", "Custom file")
+MOD_VERSION_REGEX = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
+
+
+def validate_mod_package_settings(settings):
+    if not settings.get("mod_package_enabled", False):
+        return
+
+    name = str(settings.get("mod_name", "")).strip()
+    version = str(settings.get("mod_version", "")).strip()
+    bump = str(settings.get("mod_version_bump", "None")).strip()
+    icon_path = str(settings.get("mod_icon_path", "")).strip()
+    readme_path = str(settings.get("mod_readme_path", "")).strip()
+    license_mode = str(settings.get("mod_license_mode", "None")).strip()
+    license_path = str(settings.get("mod_license_path", "")).strip()
+    author = str(settings.get("mod_author", "")).strip()
+
+    if not name:
+        raise BuildError("Mod Package is enabled, but Mod name is empty.")
+    if not MOD_VERSION_REGEX.fullmatch(version):
+        raise BuildError("Mod version must use major.minor.patch format, for example 1.2.3.")
+    if bump not in MOD_VERSION_BUMP_OPTIONS:
+        raise BuildError("Mod version bump must be None, Patch, Minor, or Major.")
+    if icon_path:
+        if not os.path.isfile(icon_path):
+            raise BuildError(f"Mod icon does not exist: {icon_path}")
+        if Path(icon_path).suffix.lower() != ".paa":
+            raise BuildError("Mod icon must be a .paa file.")
+    if readme_path and not os.path.isfile(readme_path):
+        raise BuildError(f"Mod README does not exist: {readme_path}")
+    if license_mode not in MOD_LICENSE_OPTIONS:
+        raise BuildError("Mod license must be None, All Rights Reserved, MIT, or Custom file.")
+    if license_mode in {"All Rights Reserved", "MIT"} and not author:
+        raise BuildError(f"Mod author is required for the {license_mode} license.")
+    if license_mode == "Custom file":
+        if not license_path:
+            raise BuildError("Select a custom license file or change Mod license.")
+        if not os.path.isfile(license_path):
+            raise BuildError(f"Custom mod license does not exist: {license_path}")
+
+    output_names = {}
+    package_sources = [("icon", icon_path), ("README", readme_path)]
+
+    if license_mode == "Custom file":
+        package_sources.append(("license", license_path))
+    elif license_mode != "None":
+        output_names["license"] = "generated license"
+
+    for label, source in package_sources:
+        if not source:
+            continue
+
+        output_name = os.path.basename(source).casefold()
+
+        if output_name in {"mod.cpp", "mod.cpp.tmp"}:
+            raise BuildError(f"Mod package {label} cannot use reserved filename: {os.path.basename(source)}")
+        if output_name in output_names:
+            raise BuildError(f"Mod package files have the same output filename: {os.path.basename(source)}")
+
+        output_names[output_name] = label
+
+
+def bump_mod_version(version, bump):
+    match = MOD_VERSION_REGEX.fullmatch(str(version).strip())
+
+    if not match:
+        raise BuildError("Mod version must use major.minor.patch format, for example 1.2.3.")
+
+    major, minor, patch = (int(value) for value in match.groups())
+
+    if bump == "Major":
+        return f"{major + 1}.0.0"
+    if bump == "Minor":
+        return f"{major}.{minor + 1}.0"
+    if bump == "Patch":
+        return f"{major}.{minor}.{patch + 1}"
+    return f"{major}.{minor}.{patch}"
+
+
+def escape_mod_cpp_string(value):
+    value = " ".join(str(value or "").splitlines()).strip()
+    return value.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def build_mod_cpp_text(settings, version, icon_name=""):
+    name = str(settings.get("mod_name", "")).strip()
+    tooltip = str(settings.get("mod_tooltip", "")).strip() or name
+    overview = str(settings.get("mod_overview", "")).strip() or tooltip
+    properties = [("name", name)]
+
+    if icon_name:
+        properties.extend([
+            ("picture", icon_name),
+            ("logoSmall", icon_name),
+            ("logo", icon_name),
+            ("logoOver", icon_name),
+        ])
+
+    properties.extend([
+        ("tooltip", tooltip),
+        ("overview", overview),
+        ("action", str(settings.get("mod_action", "")).strip()),
+        ("author", str(settings.get("mod_author", "")).strip()),
+        ("version", version),
+    ])
+    return "".join(
+        f'{key} = "{escape_mod_cpp_string(value)}";\n'
+        for key, value in properties
+        if value or key in {"name", "tooltip", "overview", "version"}
+    )
+
+
+def build_mod_license_text(settings):
+    mode = str(settings.get("mod_license_mode", "None")).strip()
+    author = str(settings.get("mod_author", "")).strip()
+    year = datetime.now().year
+
+    if mode == "All Rights Reserved":
+        return (
+            f"Copyright (c) {year} {author}\n"
+            "All rights reserved.\n\n"
+            "This mod and its contents may not be copied, modified, redistributed, republished, or used in another work without prior written permission from the copyright holder.\n"
+        )
+    if mode == "MIT":
+        return (
+            f"MIT License\n\nCopyright (c) {year} {author}\n\n"
+            "Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the \"Software\"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:\n\n"
+            "The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.\n\n"
+            "THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.\n"
+        )
+    return ""
+
+
+def copy_mod_package_file(source, output_root, log):
+    source = os.path.abspath(source)
+    target = os.path.join(output_root, os.path.basename(source))
+
+    if os.path.normcase(source) != os.path.normcase(os.path.abspath(target)):
+        shutil.copy2(source, target)
+        log(f"Copied mod package file: {target}")
+    else:
+        log(f"Mod package file already in output: {target}")
+
+    return os.path.basename(target)
+
+
+def write_mod_package(settings, output_root, log):
+    if not settings.get("mod_package_enabled", False):
+        return {}
+
+    validate_mod_package_settings(settings)
+    bump = str(settings.get("mod_version_bump", "None")).strip()
+    version = bump_mod_version(settings.get("mod_version", "0.0.0"), bump)
+    icon_path = str(settings.get("mod_icon_path", "")).strip()
+    readme_path = str(settings.get("mod_readme_path", "")).strip()
+    license_mode = str(settings.get("mod_license_mode", "None")).strip()
+    license_path = str(settings.get("mod_license_path", "")).strip()
+    icon_name = copy_mod_package_file(icon_path, output_root, log) if icon_path else ""
+
+    if readme_path:
+        copy_mod_package_file(readme_path, output_root, log)
+
+    if license_mode == "Custom file":
+        copy_mod_package_file(license_path, output_root, log)
+    elif license_mode != "None":
+        license_target = Path(output_root) / "LICENSE"
+        license_target.write_text(build_mod_license_text(settings), encoding="utf-8")
+        log(f"Generated mod license: {license_target}")
+
+    mod_cpp_target = Path(output_root) / "mod.cpp"
+    mod_cpp_temp = Path(output_root) / "mod.cpp.tmp"
+    mod_cpp_temp.write_text(build_mod_cpp_text(settings, version, icon_name), encoding="utf-8")
+    os.replace(mod_cpp_temp, mod_cpp_target)
+    log(f"Generated mod metadata: {mod_cpp_target}")
+    log(f"Mod version: {version}" + (f" ({bump} bump applied)" if bump != "None" else ""))
+    return {
+        "mod_package_version": version,
+        "mod_version_bump_applied": bump != "None",
+    }
 
 def get_available_logical_threads():
     process_cpu_count = getattr(os, "process_cpu_count", None)
@@ -1884,6 +2064,7 @@ def build_all(settings, log, progress_callback, cancel_callback=None):
     temp_root = os.path.normpath(settings["temp_dir"])
     if not os.path.isdir(source_root):
         raise BuildError(f"Project Source is not a directory: {source_root}")
+    validate_mod_package_settings(settings)
     os.makedirs(output_addons_dir, exist_ok=True)
     os.makedirs(output_keys_dir, exist_ok=True)
     ensure_builder_temp_root(temp_root, log, source_root, output_root)
@@ -2105,6 +2286,7 @@ def build_all(settings, log, progress_callback, cancel_callback=None):
 
     progress_callback(len(targets), len(targets))
     save_build_cache(cache)
+    summary.update(write_mod_package(settings, output_root, log))
     elapsed = time.time() - start
     log("")
     log("=" * 80)

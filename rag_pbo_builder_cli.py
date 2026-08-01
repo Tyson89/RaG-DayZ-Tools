@@ -6,7 +6,7 @@ from pathlib import Path
 
 from rag_build_pipeline import build_all, detect_addon_targets, get_default_max_processes
 from rag_builder_common import BuildError, get_exclusion_rules, get_exclusion_setting_values
-from rag_builder_storage import create_build_log_path, load_saved_settings
+from rag_builder_storage import create_build_log_path, load_saved_settings, save_saved_settings
 from rag_preflight import run_preflight_for_targets
 from rag_version import APP_VERSION
 
@@ -170,6 +170,10 @@ def run_cli(argv=None):
             validate_tool(settings.get("dssignfile_exe", ""), "DSSignFile.exe", settings["sign_pbos"])
             validate_tool(settings.get("private_key", ""), ".biprivatekey", settings["sign_pbos"])
             summary = build_all(settings, emit, lambda current, total: None)
+            if summary.get("mod_version_bump_applied") and summary.get("mod_package_version"):
+                saved["mod_version"] = summary["mod_package_version"]
+                saved["mod_version_bump"] = "None"
+                save_saved_settings(saved)
             payload = {"command": "build", **summary}
             exit_code = 1 if summary.get("failed") else 0
 

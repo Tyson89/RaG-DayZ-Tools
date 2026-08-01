@@ -12,6 +12,7 @@ Features:
 - Optional PBO signing with DSSignFile.exe
 - Skip unchanged addons unless Force rebuild is enabled
 - Output layout: Addons and Keys folders
+- Optional root-level mod.cpp, PAA branding, README, license, and semantic version management
 - Copies matching .bikey into Keys after signing
 - DayZ-focused Preflight v2 checks for config syntax, CfgPatches, CfgMods script modules, prefixes, references with line numbers, excluded assets, RVMATs, P3Ds, case conflicts, texture freshness, path issues, and terrain/WRP map checks, terrain folder/source warnings, 2D map hints, terrain layer checks, terrain size estimates, terrain size breakdowns, smarter source/export warnings, and terrain duplicate checks
 - Configurable Preflight checks, compact severity filtering, and report export
@@ -32,6 +33,8 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
 from rag_build_pipeline import (
+    MOD_LICENSE_OPTIONS,
+    MOD_VERSION_BUMP_OPTIONS,
     build_all,
     clear_full_temp_folder,
     clear_temp_folder,
@@ -41,6 +44,7 @@ from rag_build_pipeline import (
     find_dssignfile,
     find_imagetopaa,
     get_default_max_processes,
+    validate_mod_package_settings,
 )
 from rag_builder_common import (
     BuildCancelled,
@@ -74,7 +78,7 @@ APP_ICON_FILE = os.path.join("assets", "installer.ico")
 
 DEFAULT_TEMP_DIR = str(Path("P:/Temp"))
 DEFAULT_PROJECT_ROOT = "P:"
-PROFILE_SCHEMA_VERSION = 2
+PROFILE_SCHEMA_VERSION = 3
 DEFAULT_PROFILE_NAME = "Default"
 PROFILE_DEFAULT_SETTINGS = {
     "source_root": "",
@@ -89,6 +93,18 @@ PROFILE_DEFAULT_SETTINGS = {
     "force_rebuild": False,
     "preflight_before_build": False,
     "start_server_after_build": False,
+    "mod_package_enabled": False,
+    "mod_name": "",
+    "mod_tooltip": "",
+    "mod_overview": "",
+    "mod_action": "",
+    "mod_author": "",
+    "mod_version": "0.0.0",
+    "mod_version_bump": "None",
+    "mod_icon_path": "",
+    "mod_readme_path": "",
+    "mod_license_mode": "None",
+    "mod_license_path": "",
     "project_root": DEFAULT_PROJECT_ROOT,
     "binarize_addon_folders": "",
     "exclude_file_extensions": DEFAULT_EXCLUDE_FILE_EXTENSIONS,
@@ -120,6 +136,18 @@ PROFILE_VAR_FIELDS = {
     "force_rebuild": "force_rebuild_var",
     "preflight_before_build": "preflight_before_build_var",
     "start_server_after_build": "start_server_after_build_var",
+    "mod_package_enabled": "mod_package_enabled_var",
+    "mod_name": "mod_name_var",
+    "mod_tooltip": "mod_tooltip_var",
+    "mod_overview": "mod_overview_var",
+    "mod_action": "mod_action_var",
+    "mod_author": "mod_author_var",
+    "mod_version": "mod_version_var",
+    "mod_version_bump": "mod_version_bump_var",
+    "mod_icon_path": "mod_icon_path_var",
+    "mod_readme_path": "mod_readme_path_var",
+    "mod_license_mode": "mod_license_mode_var",
+    "mod_license_path": "mod_license_path_var",
     "project_root": "project_root_var",
     "binarize_addon_folders": "binarize_addon_folders_var",
     "exclude_file_extensions": "exclude_file_extensions_var",
@@ -301,6 +329,10 @@ def normalize_profile_settings(value):
             item = bool(item)
         else:
             item = str(item).strip()
+        if key == "mod_version_bump" and item not in MOD_VERSION_BUMP_OPTIONS:
+            item = "None"
+        elif key == "mod_license_mode" and item not in MOD_LICENSE_OPTIONS:
+            item = "None"
         settings[key] = item
     return settings
 
@@ -373,6 +405,18 @@ class RaGPboBuilderApp(tk.Tk):
         self.force_rebuild_var = tk.BooleanVar(value=self.saved_settings.get("force_rebuild", False))
         self.preflight_before_build_var = tk.BooleanVar(value=self.saved_settings.get("preflight_before_build", False))
         self.start_server_after_build_var = tk.BooleanVar(value=self.saved_settings.get("start_server_after_build", False))
+        self.mod_package_enabled_var = tk.BooleanVar(value=self.saved_settings.get("mod_package_enabled", False))
+        self.mod_name_var = tk.StringVar(value=self.saved_settings.get("mod_name", ""))
+        self.mod_tooltip_var = tk.StringVar(value=self.saved_settings.get("mod_tooltip", ""))
+        self.mod_overview_var = tk.StringVar(value=self.saved_settings.get("mod_overview", ""))
+        self.mod_action_var = tk.StringVar(value=self.saved_settings.get("mod_action", ""))
+        self.mod_author_var = tk.StringVar(value=self.saved_settings.get("mod_author", ""))
+        self.mod_version_var = tk.StringVar(value=self.saved_settings.get("mod_version", "0.0.0"))
+        self.mod_version_bump_var = tk.StringVar(value=self.saved_settings.get("mod_version_bump", "None"))
+        self.mod_icon_path_var = tk.StringVar(value=self.saved_settings.get("mod_icon_path", ""))
+        self.mod_readme_path_var = tk.StringVar(value=self.saved_settings.get("mod_readme_path", ""))
+        self.mod_license_mode_var = tk.StringVar(value=self.saved_settings.get("mod_license_mode", "None"))
+        self.mod_license_path_var = tk.StringVar(value=self.saved_settings.get("mod_license_path", ""))
         self.max_processes_var = tk.IntVar(value=self.saved_settings.get("max_processes", get_default_max_processes()))
         self.binarize_exe_var = tk.StringVar(value=self.saved_settings.get("binarize_exe", find_dayz_binarize()))
         self.cfgconvert_exe_var = tk.StringVar(value=self.saved_settings.get("cfgconvert_exe", find_cfgconvert()))
@@ -755,7 +799,7 @@ class RaGPboBuilderApp(tk.Tk):
         def on_toggle():
             refresh()
             self.save_path_settings()
-        width = 22 if columnspan > 1 else max(14, min(len(text) + 3, 22))
+        width = max(22, len(text) + 3) if columnspan > 1 else max(14, min(len(text) + 3, 22))
         checkbox = tk.Checkbutton(parent, text=text, variable=variable, command=on_toggle, indicatoron=False, selectcolor=GRAPHITE_CARD_SOFT, relief="flat", borderwidth=0, padx=12, pady=7, font=("Segoe UI", 10), cursor="hand2", anchor="w", justify="left", width=width)
         checkbox.grid(row=row, column=column, columnspan=columnspan, sticky="w", pady=(0, 6), padx=(0, 8))
         refresh()
@@ -1307,6 +1351,71 @@ class RaGPboBuilderApp(tk.Tk):
         )
         ttk.Label(post_build_frame, text="Enable Start local server from main window Build options.", foreground=GRAPHITE_MUTED).grid(row=1, column=1, columnspan=2, sticky="w", padx=(8, 0), pady=(0, 4))
 
+        mod_package_frame = ttk.LabelFrame(container, text="Mod package", padding=14)
+        mod_package_frame.pack(fill="x", pady=(12, 0))
+        mod_package_frame.columnconfigure(1, weight=1)
+        self.mod_package_enabled_checkbox = self._add_checkbutton(
+            mod_package_frame,
+            "Generate mod package files",
+            self.mod_package_enabled_var,
+            0,
+            0,
+            "Generate mod.cpp and copy selected root-level mod files after a successful build.",
+            columnspan=3,
+        )
+
+        for row, label, variable, tooltip in [
+            (1, "Mod name", self.mod_name_var, "Display name shown by DayZ's mod manager."),
+            (2, "Tooltip", self.mod_tooltip_var, "Short mod-manager tooltip. Defaults to Mod name when empty."),
+            (4, "Action URL", self.mod_action_var, "Website, Workshop, or repository URL opened by the mod manager."),
+            (5, "Author", self.mod_author_var, "Mod author shown in mod.cpp and used by generated license templates."),
+        ]:
+            ttk.Label(mod_package_frame, text=label, style="FieldName.TLabel").grid(row=row, column=0, sticky="w", pady=4)
+            entry = ttk.Entry(mod_package_frame, textvariable=variable)
+            entry.grid(row=row, column=1, columnspan=2, sticky="ew", padx=(8, 0), pady=4)
+            entry.bind("<KeyRelease>", self.enable_mod_package)
+            add_tooltip(entry, tooltip)
+
+        ttk.Label(mod_package_frame, text="Overview", style="FieldName.TLabel").grid(row=3, column=0, sticky="nw", pady=4)
+        overview_frame = ttk.Frame(mod_package_frame, style="Card.TFrame")
+        overview_frame.grid(row=3, column=1, columnspan=2, sticky="ew", padx=(8, 0), pady=4)
+        overview_entry = tk.Text(overview_frame, height=4, wrap="word", bg=GRAPHITE_FIELD, fg=GRAPHITE_TEXT, insertbackground=GRAPHITE_TEXT, selectbackground=GRAPHITE_ACCENT_DARK, selectforeground="#ffffff", relief="flat", borderwidth=0, highlightthickness=1, highlightbackground=GRAPHITE_BORDER, highlightcolor=GRAPHITE_ACCENT, font=("Segoe UI", 10))
+        overview_scrollbar = ttk.Scrollbar(overview_frame, orient="vertical", command=overview_entry.yview)
+        overview_entry.configure(yscrollcommand=overview_scrollbar.set)
+        overview_entry.pack(side="left", fill="both", expand=True)
+        overview_scrollbar.pack(side="right", fill="y")
+        overview_entry.insert("1.0", self.mod_overview_var.get())
+        overview_entry.edit_modified(False)
+        def on_overview_modified(event=None):
+            if overview_entry.edit_modified():
+                self.enable_mod_package()
+                overview_entry.edit_modified(False)
+        overview_entry.bind("<<Modified>>", on_overview_modified)
+        overview_entry.bind("<MouseWheel>", lambda event: (overview_entry.yview_scroll(int(-1 * (event.delta / 120)), "units"), "break")[1])
+        add_tooltip(overview_entry, "Longer mod-manager description. Defaults to Tooltip when empty.")
+
+        ttk.Label(mod_package_frame, text="Version", style="FieldName.TLabel").grid(row=6, column=0, sticky="w", pady=4)
+        version_frame = ttk.Frame(mod_package_frame, style="Card.TFrame")
+        version_frame.grid(row=6, column=1, columnspan=2, sticky="ew", padx=(8, 0), pady=4)
+        version_entry = ttk.Entry(version_frame, textvariable=self.mod_version_var, width=18)
+        version_entry.pack(side="left")
+        version_entry.bind("<KeyRelease>", self.enable_mod_package)
+        add_tooltip(version_entry, "Semantic version in major.minor.patch format.")
+        ttk.Label(version_frame, text="One-shot bump", style="FieldMuted.TLabel").pack(side="left", padx=(12, 6))
+        bump_combo = ttk.Combobox(version_frame, textvariable=self.mod_version_bump_var, values=MOD_VERSION_BUMP_OPTIONS, state="readonly", width=10)
+        bump_combo.pack(side="left")
+        bump_combo.bind("<<ComboboxSelected>>", self.enable_mod_package)
+        add_tooltip(bump_combo, "Applied after successful PBO work, saved as the new version, then reset to None.")
+
+        self._add_file_row(mod_package_frame, 7, "Icon .paa", self.mod_icon_path_var, self.choose_mod_icon, "Copied to Build Output and used for picture/logo fields in mod.cpp.")
+        self._add_file_row(mod_package_frame, 8, "README", self.mod_readme_path_var, self.choose_mod_readme, "Optional modder-supplied README copied to Build Output.")
+        ttk.Label(mod_package_frame, text="License", style="FieldName.TLabel").grid(row=9, column=0, sticky="w", pady=4)
+        license_combo = ttk.Combobox(mod_package_frame, textvariable=self.mod_license_mode_var, values=MOD_LICENSE_OPTIONS, state="readonly")
+        license_combo.grid(row=9, column=1, columnspan=2, sticky="ew", padx=(8, 0), pady=4)
+        license_combo.bind("<<ComboboxSelected>>", self.enable_mod_package)
+        add_tooltip(license_combo, "Generate All Rights Reserved or MIT text, copy a custom file, or create no license file.")
+        self._add_file_row(mod_package_frame, 10, "Custom license", self.mod_license_path_var, self.choose_mod_license, "Used only when License is Custom file.")
+
         preflight_frame = ttk.LabelFrame(container, text="Preflight checks", padding=14)
         preflight_frame.pack(fill="x", pady=(12, 0))
         for col, size in [(0, 175), (1, 175), (2, 175)]:
@@ -1440,6 +1549,7 @@ class RaGPboBuilderApp(tk.Tk):
             self.binarize_addon_folders_var.set(binarize_addon_entry.get("1.0", "end").strip())
             self.exclude_file_extensions_var.set(exclude_extensions_entry.get("1.0", "end").strip())
             self.exclude_folder_names_var.set(exclude_folders_entry.get("1.0", "end").strip())
+            self.mod_overview_var.set(overview_entry.get("1.0", "end").strip())
             self.save_path_settings()
             close_options_window()
         tk.Button(buttons, text="Save", command=save_and_close, bg=GRAPHITE_ACCENT_DARK, fg="#ffffff", activebackground=GRAPHITE_ACCENT, activeforeground="#ffffff", relief="flat", borderwidth=0, padx=14, pady=8, font=("Segoe UI", 10, "bold"), cursor="hand2").pack(side="right")
@@ -1511,6 +1621,18 @@ class RaGPboBuilderApp(tk.Tk):
             "force_rebuild": bool(self.force_rebuild_var.get()),
             "preflight_before_build": bool(self.preflight_before_build_var.get()),
             "start_server_after_build": bool(self.start_server_after_build_var.get()),
+            "mod_package_enabled": bool(self.mod_package_enabled_var.get()),
+            "mod_name": self.mod_name_var.get().strip(),
+            "mod_tooltip": self.mod_tooltip_var.get().strip(),
+            "mod_overview": self.mod_overview_var.get().strip(),
+            "mod_action": self.mod_action_var.get().strip(),
+            "mod_author": self.mod_author_var.get().strip(),
+            "mod_version": self.mod_version_var.get().strip(),
+            "mod_version_bump": self.mod_version_bump_var.get().strip(),
+            "mod_icon_path": self.mod_icon_path_var.get().strip(),
+            "mod_readme_path": self.mod_readme_path_var.get().strip(),
+            "mod_license_mode": self.mod_license_mode_var.get().strip(),
+            "mod_license_path": self.mod_license_path_var.get().strip(),
             "max_processes": max_processes,
             "binarize_exe": self.binarize_exe_var.get().strip(),
             "cfgconvert_exe": self.cfgconvert_exe_var.get().strip(),
@@ -1607,6 +1729,37 @@ class RaGPboBuilderApp(tk.Tk):
         path = filedialog.askopenfilename(title="Select local server launcher", initialdir=get_initial_dir_from_value(self.server_launcher_var.get(), self.output_root_var.get()), filetypes=[("Server launchers", ("*.bat", "*.cmd", "*.exe")), ("Batch files", ("*.bat", "*.cmd")), ("Executable", "*.exe"), ("All files", "*.*")])
         if path:
             self.server_launcher_var.set(path)
+            self.save_path_settings()
+
+    def choose_mod_icon(self):
+        path = filedialog.askopenfilename(title="Select mod icon", initialdir=get_initial_dir_from_value(self.mod_icon_path_var.get(), self.source_root_var.get()), filetypes=[("PAA image", "*.paa"), ("All files", "*.*")])
+        if path:
+            self.mod_icon_path_var.set(path)
+            self.enable_mod_package()
+            self.save_path_settings()
+
+    def choose_mod_readme(self):
+        path = filedialog.askopenfilename(title="Select mod README", initialdir=get_initial_dir_from_value(self.mod_readme_path_var.get(), self.source_root_var.get()), filetypes=[("README", ("*.md", "*.txt")), ("All files", "*.*")])
+        if path:
+            self.mod_readme_path_var.set(path)
+            self.enable_mod_package()
+            self.save_path_settings()
+
+    def choose_mod_license(self):
+        path = filedialog.askopenfilename(title="Select custom mod license", initialdir=get_initial_dir_from_value(self.mod_license_path_var.get(), self.source_root_var.get()), filetypes=[("License files", ("LICENSE", "LICENSE.*", "*.txt", "*.md")), ("All files", "*.*")])
+        if path:
+            self.mod_license_path_var.set(path)
+            self.enable_mod_package()
+            self.save_path_settings()
+
+    def enable_mod_package(self, event=None):
+        if self.mod_package_enabled_var.get():
+            return
+        checkbox = getattr(self, "mod_package_enabled_checkbox", None)
+        if checkbox and checkbox.winfo_exists():
+            checkbox.invoke()
+        else:
+            self.mod_package_enabled_var.set(True)
             self.save_path_settings()
 
     def validate_preflight_settings(self):
@@ -1716,6 +1869,18 @@ class RaGPboBuilderApp(tk.Tk):
             "force_rebuild": bool(self.force_rebuild_var.get()),
             "preflight_before_build": bool(self.preflight_before_build_var.get()),
             "start_server_after_build": bool(self.start_server_after_build_var.get()),
+            "mod_package_enabled": bool(self.mod_package_enabled_var.get()),
+            "mod_name": self.mod_name_var.get().strip(),
+            "mod_tooltip": self.mod_tooltip_var.get().strip(),
+            "mod_overview": self.mod_overview_var.get().strip(),
+            "mod_action": self.mod_action_var.get().strip(),
+            "mod_author": self.mod_author_var.get().strip(),
+            "mod_version": self.mod_version_var.get().strip(),
+            "mod_version_bump": self.mod_version_bump_var.get().strip(),
+            "mod_icon_path": self.mod_icon_path_var.get().strip(),
+            "mod_readme_path": self.mod_readme_path_var.get().strip(),
+            "mod_license_mode": self.mod_license_mode_var.get().strip(),
+            "mod_license_path": self.mod_license_path_var.get().strip(),
             "binarize_exe": self.binarize_exe_var.get().strip(),
             "cfgconvert_exe": self.cfgconvert_exe_var.get().strip(),
             "imagetopaa_exe": self.imagetopaa_exe_var.get().strip(),
@@ -1745,6 +1910,7 @@ class RaGPboBuilderApp(tk.Tk):
             "preflight_check_terrain_size": bool(self.preflight_check_terrain_size_var.get()),
             "preflight_check_wrp_internal": bool(self.preflight_check_wrp_internal_var.get()),
         }
+        validate_mod_package_settings(settings)
         self.save_path_settings()
         return settings
 
@@ -1782,6 +1948,26 @@ class RaGPboBuilderApp(tk.Tk):
             error = f"Could not start local server launcher: {e}"
             self.log(f"ERROR: {error}")
             return False, error
+
+    def persist_mod_package_result(self, build_result):
+        version = str(build_result.get("mod_package_version", "")).strip()
+
+        if not version or not build_result.get("mod_version_bump_applied", False):
+            return
+
+        self.mod_version_var.set(version)
+        self.mod_version_bump_var.set("None")
+        profile = self.find_profile(self.active_profile_name)
+
+        if profile:
+            settings = normalize_profile_settings(profile.get("settings", {}))
+            settings["mod_version"] = version
+            settings["mod_version_bump"] = "None"
+            profile["settings"] = settings
+            self.save_profile_store()
+
+        self.save_path_settings()
+        self.log(f"Saved mod version {version}; one-shot version bump reset to None.")
 
     def request_build_stop(self):
         if not self.is_building or self.cancel_event.is_set():
@@ -1927,6 +2113,7 @@ class RaGPboBuilderApp(tk.Tk):
     def _batch_build_worker(self, prepared):
         totals = {"built": 0, "skipped": 0, "signed": 0, "failed": 0, "targets": 0}
         errors = []
+        mod_package_result = {}
         total_presets = len(prepared)
         for index, (name, settings) in enumerate(prepared, start=1):
             if self.cancel_event.is_set():
@@ -1950,6 +2137,11 @@ class RaGPboBuilderApp(tk.Tk):
                     summary = build_all(settings, preset_log, lambda current, total: None, self.cancel_event.is_set)
                     for key in totals:
                         totals[key] += int(summary.get(key, 0))
+                    if summary.get("mod_package_version"):
+                        mod_package_result = {
+                            "mod_package_version": summary["mod_package_version"],
+                            "mod_version_bump_applied": bool(summary.get("mod_version_bump_applied", False)),
+                        }
                 except BuildCancelled:
                     preset_log("WARNING: Batch build stopped by user at a safe point.")
                     self.log_queue.put(("cancelled", f"Batch build stopped during preset {index} of {total_presets}: {name}"))
@@ -1968,6 +2160,7 @@ class RaGPboBuilderApp(tk.Tk):
             "totals": totals,
             "start_server_after_build": bool(post_build_settings.get("start_server_after_build", False)),
             "server_launcher": post_build_settings.get("server_launcher", ""),
+            **mod_package_result,
         }))
 
     def thread_log(self, message):
@@ -2217,6 +2410,7 @@ class RaGPboBuilderApp(tk.Tk):
                     self.stop_button.configure(state="disabled")
                     self.preflight_button.configure(state="normal")
                     self.progress.configure(value=self.progress.cget("maximum"))
+                    self.persist_mod_package_result(payload)
                     totals = payload["totals"]
                     message = f"Batch build finished.\n\nPresets: {payload['succeeded']}/{payload['presets']} succeeded\nBuilt: {totals['built']}\nSkipped: {totals['skipped']}"
                     if payload["errors"]:
@@ -2240,6 +2434,7 @@ class RaGPboBuilderApp(tk.Tk):
                     self.stop_button.configure(state="disabled")
                     self.preflight_button.configure(state="normal")
                     self.progress.configure(value=self.progress.cget("maximum"))
+                    self.persist_mod_package_result(payload)
                     launched, launch_error = self.launch_local_server(payload)
                     self.close_current_log_file()
                     if launch_error:
