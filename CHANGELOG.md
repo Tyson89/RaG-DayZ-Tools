@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.0.1
+## 1.0.2
 
 - Installer now lets users choose every optional tool, keeps the updater required, and offers unchecked desktop shortcuts for all installed tools.
 - Added profile-backed mod package generation for `mod.cpp`, PAA branding, README copying, built-in or custom licenses, and one-shot semantic version bumps.
