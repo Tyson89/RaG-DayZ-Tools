@@ -2,6 +2,7 @@
 
 ## 1.0.1
 
+- Installer now lets users choose every optional tool, keeps the updater required, and offers unchecked desktop shortcuts for all installed tools.
 - Added profile-backed mod package generation for `mod.cpp`, PAA branding, README copying, built-in or custom licenses, and one-shot semantic version bumps.
 - Added preflight errors for duplicate attribute assignments within the same config class.
 - Added preflight validation for missing `CfgSoundShaders` sample paths, missing sound files, and undefined sound shaders referenced by `CfgSoundSets`, including DayZ's extensionless sound sample syntax, required-addon-first shader lookup with project-drive fallback, and double-click source navigation using unambiguous absolute paths and line-aware editor support.
