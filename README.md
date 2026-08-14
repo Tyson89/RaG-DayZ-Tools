@@ -2,7 +2,7 @@
 
 Free Windows toolkit for DayZ modders, terrain makers, and server owners.
 
-- **Version:** 1.0.3 Stable
+- **Version:** 1.0.4 Stable
 - **Author:** RaG Tyson
 - **Documentation:** [RaG DayZ Tools Wiki](https://github.com/Tyson89/RaG-DayZ-Tools/wiki)
 - **Downloads:** [GitHub Releases](https://github.com/Tyson89/RaG-DayZ-Tools/releases)
@@ -50,6 +50,12 @@ Compiled releases do not require Python.
 - **Exclude folder names** ignores matching folders and everything inside them throughout the build.
 - Default excluded folders: `source`, `temp`.
 - CLI equivalents: `--exclude-extensions` and `--exclude-folders`.
+
+## PBO Builder Diagnostics
+
+- Binarize output uses real addon source paths instead of temporary staging paths.
+- Routine empty `model.cfg`, orphan warning-header, shadow-detail, and proxy-component noise is filtered or downgraded without hiding genuine geometry warnings.
+- Double-click INFO, WARNING, or ERROR source links to open text files with the Windows default app and P3D files with DayZ Tools Object Builder.
 
 ## Important
 

@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.0.4
+
+- Fixed Binarize summary severity parsing so identifiers containing words such as `failed` no longer create false errors.
+- Replaced temporary staging paths in Binarize diagnostics with real addon source paths.
+- Filtered valid empty `model.cfg` messages, related error cascades, and orphan `Warnings in` headers.
+- Reclassified detailed-shadow messages as info and kept concrete geometry diagnostics visible as warnings.
+- Added MLOD face-geometry matching so convex warnings caused by proxy triangles are suppressed without hiding non-proxy components.
+- Changed INFO, WARNING, and ERROR source links to use the Windows default app, while P3D links open directly in DayZ Tools Object Builder.
+
 ## 1.0.3
 
 - Added a Preflight option to disable referenced-file path checks while keeping structural and script validation active.
