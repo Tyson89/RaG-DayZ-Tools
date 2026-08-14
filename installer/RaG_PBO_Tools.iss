@@ -64,13 +64,22 @@ Source: "README.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "CHANGELOG.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "LICENSE.txt"; DestDir: "{app}"; Flags: ignoreversion
 
+[InstallDelete]
+Type: files; Name: "{autoprograms}\RaG PBO Builder.lnk"
+Type: files; Name: "{autoprograms}\RaG Game Data Extractor.lnk"
+Type: files; Name: "{autoprograms}\RaG PBO Inspector.lnk"
+Type: files; Name: "{autoprograms}\RaG Mod Relocator.lnk"
+Type: files; Name: "{autoprograms}\RaG Workshop Publisher.lnk"
+Type: files; Name: "{autoprograms}\RaG Tools Updater.lnk"
+Type: filesandordirs; Name: "{group}"
+
 [Icons]
-Name: "{autoprograms}\RaG PBO Builder"; Filename: "{app}\RaG_PBO_Builder\RaG_PBO_Builder.exe"; Components: builder
-Name: "{autoprograms}\RaG Game Data Extractor"; Filename: "{app}\RaG_Game_Data_Extractor\RaG_Game_Data_Extractor.exe"; Components: extractor
-Name: "{autoprograms}\RaG PBO Inspector"; Filename: "{app}\RaG_PBO_Inspector\RaG_PBO_Inspector.exe"; Components: inspector
-Name: "{autoprograms}\RaG Mod Relocator"; Filename: "{app}\RaG_Mod_Relocator\RaG_Mod_Relocator.exe"; Components: relocator
-Name: "{autoprograms}\RaG Workshop Publisher"; Filename: "{app}\RaG_Workshop_Publisher\RaG_Workshop_Publisher.exe"; Components: publisher
-Name: "{autoprograms}\RaG Tools Updater"; Filename: "{app}\RaG_Tools_Updater\RaG_Tools_Updater.exe"; Components: updater
+Name: "{group}\RaG PBO Builder"; Filename: "{app}\RaG_PBO_Builder\RaG_PBO_Builder.exe"; Components: builder
+Name: "{group}\RaG Game Data Extractor"; Filename: "{app}\RaG_Game_Data_Extractor\RaG_Game_Data_Extractor.exe"; Components: extractor
+Name: "{group}\RaG PBO Inspector"; Filename: "{app}\RaG_PBO_Inspector\RaG_PBO_Inspector.exe"; Components: inspector
+Name: "{group}\RaG Mod Relocator"; Filename: "{app}\RaG_Mod_Relocator\RaG_Mod_Relocator.exe"; Components: relocator
+Name: "{group}\RaG Workshop Publisher"; Filename: "{app}\RaG_Workshop_Publisher\RaG_Workshop_Publisher.exe"; Components: publisher
+Name: "{group}\RaG Tools Updater"; Filename: "{app}\RaG_Tools_Updater\RaG_Tools_Updater.exe"; Components: updater
 Name: "{autodesktop}\RaG PBO Builder"; Filename: "{app}\RaG_PBO_Builder\RaG_PBO_Builder.exe"; Tasks: desktopbuilder; Components: builder
 Name: "{autodesktop}\RaG Game Data Extractor"; Filename: "{app}\RaG_Game_Data_Extractor\RaG_Game_Data_Extractor.exe"; Tasks: desktopextractor; Components: extractor
 Name: "{autodesktop}\RaG PBO Inspector"; Filename: "{app}\RaG_PBO_Inspector\RaG_PBO_Inspector.exe"; Tasks: desktopinspector; Components: inspector
