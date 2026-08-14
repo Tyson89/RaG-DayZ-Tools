@@ -23,7 +23,6 @@ import json
 import os
 import queue
 import re
-import shutil
 import subprocess
 import sys
 import threading
@@ -43,6 +42,7 @@ from rag_build_pipeline import (
     find_dayz_binarize,
     find_dssignfile,
     find_imagetopaa,
+    find_object_builder,
     get_default_max_processes,
     validate_mod_package_settings,
 )
@@ -2231,7 +2231,7 @@ class RaGPboBuilderApp(tk.Tk):
         self.log_text.bind("<Double-Button-1>", self.open_log_diagnostic)
 
     def resolve_diagnostic_source(self, line):
-        if self.get_log_tag(line) not in {"log_error", "log_warning"}:
+        if self.get_log_tag(line) not in {"log_error", "log_warning", "log_info"}:
             return None
         absolute_line = re.search(
             r"(?P<path>[A-Za-z]:[\\/][^\r\n]*?\.(?:cpp|c|hpp|h|cfg|rvmat|layout|xml|json|p3d|wrp)):\s*line\s+(?P<line>\d+)",
@@ -2299,40 +2299,21 @@ class RaGPboBuilderApp(tk.Tk):
 
     def open_diagnostic_source(self, path, line_number=0):
         try:
-            local_app_data = os.environ.get("LOCALAPPDATA", "")
-            program_files = os.environ.get("ProgramFiles", "")
-            editor_candidates = [
-                (shutil.which("code"), "code"),
-                (os.path.join(local_app_data, "Programs", "Microsoft VS Code", "Code.exe"), "code"),
-                (shutil.which("cursor"), "code"),
-                (os.path.join(local_app_data, "Programs", "Cursor", "Cursor.exe"), "code"),
-                (shutil.which("notepad++"), "notepad++"),
-                (os.path.join(program_files, "Notepad++", "notepad++.exe"), "notepad++"),
-                (shutil.which("subl"), "sublime"),
-                (os.path.join(program_files, "Sublime Text", "sublime_text.exe"), "sublime"),
-            ]
-
-            for executable, editor_type in editor_candidates:
-                if not executable or not os.path.isfile(executable):
-                    continue
-
-                if editor_type == "code":
-                    target = f"{path}:{line_number}" if line_number else path
-                    subprocess.Popen([executable, "-g", target])
-                elif editor_type == "notepad++":
-                    args = [executable]
-                    if line_number:
-                        args.append(f"-n{line_number}")
-                    args.append(path)
-                    subprocess.Popen(args)
-                else:
-                    target = f"{path}:{line_number}" if line_number else path
-                    subprocess.Popen([executable, target])
+            if Path(path).suffix.lower() == ".p3d":
+                object_builder = ""
+                binarize_exe = self.binarize_exe_var.get().strip()
+                if binarize_exe:
+                    object_builder = str(Path(binarize_exe).parent.parent / "ObjectBuilder" / "ObjectBuilder.exe")
+                    if not os.path.isfile(object_builder):
+                        object_builder = ""
+                if not object_builder:
+                    object_builder = find_object_builder()
+                if not object_builder:
+                    raise FileNotFoundError("ObjectBuilder.exe not found in DayZ Tools.")
+                subprocess.Popen([object_builder, path], cwd=os.path.dirname(object_builder))
                 return
 
-            if line_number:
-                self.open_source_preview(path, line_number)
-            elif os.name == "nt":
+            if os.name == "nt":
                 os.startfile(path)
             else:
                 subprocess.Popen(["xdg-open", path])

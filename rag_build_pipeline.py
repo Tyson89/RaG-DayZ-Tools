@@ -4,6 +4,7 @@ import json
 import os
 import re
 import shutil
+import struct
 import time
 from datetime import datetime
 from pathlib import Path
@@ -1091,6 +1092,10 @@ def find_imagetopaa():
     return find_tool(get_dayz_tools_candidates("Bin", "ImageToPAA", "ImageToPAA.exe"))
 
 
+def find_object_builder():
+    return find_tool(get_dayz_tools_candidates("Bin", "ObjectBuilder", "ObjectBuilder.exe"))
+
+
 def find_dssignfile():
     return find_tool(get_dayz_tools_candidates("Bin", "DSUtils", "DSSignFile.exe") + get_dayz_tools_candidates("Bin", "DSSignFile", "DSSignFile.exe"))
 
@@ -1792,7 +1797,137 @@ def remap_tool_output_source_paths(lines, source_dir, original_source_dir):
     return [pattern.sub(lambda match: original, line) for line in lines]
 
 
+CONVEX_COMPONENT_WARNING_REGEX = re.compile(
+    r'^convex\s+"?(?P<component>component\d+)"?\s+selection faces are less then 4 in (?P<path>[A-Za-z]:[\\/].*?\.p3d):(?P<lod>[A-Za-z]+)\s*$',
+    re.IGNORECASE,
+)
+BINARIZE_WARNING_LOD_RESOLUTIONS = {
+    "geometry": 0x551184E7,
+    "geometryview": 0x59AA87BF,
+    "geometryfire": 0x59C6F3B4,
+    "roadway": 0x592A87BF,
+}
+
+
+def extract_mlod_proxy_geometry_components(data):
+    if len(data) < 12 or data[:4] != b"MLOD":
+        return set()
+
+    lod_count = struct.unpack_from("<I", data, 8)[0]
+    if not 0 < lod_count <= 512:
+        return set()
+
+    offset = 12
+    proxy_components = set()
+
+    for _lod_index in range(lod_count):
+        if offset + 28 > len(data) or data[offset:offset + 4] != b"P3DM":
+            return set()
+
+        point_count = struct.unpack_from("<I", data, offset + 12)[0]
+        normal_count = struct.unpack_from("<I", data, offset + 16)[0]
+        face_count = struct.unpack_from("<I", data, offset + 20)[0]
+        points_offset = offset + 28
+        faces_offset = points_offset + point_count * 16 + normal_count * 12
+
+        if faces_offset > len(data):
+            return set()
+
+        point_coordinates = [data[points_offset + index * 16:points_offset + index * 16 + 12] for index in range(point_count)]
+        face_signatures = []
+        offset = faces_offset
+
+        for _face_index in range(face_count):
+            if offset + 72 > len(data):
+                return set()
+
+            vertex_count = struct.unpack_from("<I", data, offset)[0]
+            point_indices = []
+
+            if 0 < vertex_count <= 4:
+                point_indices = [struct.unpack_from("<I", data, offset + 4 + vertex_index * 16)[0] for vertex_index in range(vertex_count)]
+
+            if point_indices and all(index < point_count for index in point_indices):
+                face_signatures.append((vertex_count, tuple(sorted(point_coordinates[index] for index in point_indices))))
+            else:
+                face_signatures.append(None)
+
+            offset += 72
+
+            for _field in range(2):
+                end = data.find(b"\x00", offset)
+                if end < 0:
+                    return set()
+                offset = end + 1
+
+        if offset + 4 > len(data) or data[offset:offset + 4] != b"TAGG":
+            return set()
+
+        offset += 4
+        selections = {}
+
+        while True:
+            if offset >= len(data):
+                return set()
+
+            active = data[offset]
+            offset += 1
+            end = data.find(b"\x00", offset)
+
+            if end < 0:
+                return set()
+
+            name = data[offset:end].decode("ascii", errors="ignore").lower()
+            offset = end + 1
+
+            if offset + 4 > len(data):
+                return set()
+
+            tag_size = struct.unpack_from("<I", data, offset)[0]
+            offset += 4
+            tag_end = offset + tag_size
+
+            if tag_end > len(data):
+                return set()
+
+            if active and tag_size == point_count + face_count:
+                face_weights = data[offset + point_count:tag_end]
+                selections[name] = {index for index, weight in enumerate(face_weights) if weight}
+
+            offset = tag_end
+
+            if name == "#endoffile#":
+                break
+
+        if offset + 4 > len(data):
+            return set()
+
+        resolution = struct.unpack_from("<I", data, offset)[0]
+        offset += 4
+        proxy_signatures = {
+            face_signatures[index]
+            for name, indices in selections.items()
+            if name.startswith("proxy:")
+            for index in indices
+            if face_signatures[index] is not None
+        }
+
+        if not proxy_signatures:
+            continue
+
+        for name, indices in selections.items():
+            if not re.fullmatch(r"component\d+", name) or not indices:
+                continue
+            signatures = {face_signatures[index] for index in indices}
+            if None not in signatures and signatures.issubset(proxy_signatures):
+                proxy_components.add((resolution, name))
+
+    return proxy_components
+
+
 def filter_binarize_output_lines(lines, has_terrain=False):
+    proxy_component_cache = {}
+
     def is_benign_model_cfg_line(line):
         lower = line.lower()
         return any(message in lower for message in (
@@ -1824,6 +1959,30 @@ def filter_binarize_output_lines(lines, has_terrain=False):
             return True
         return False
 
+    def get_detail_severity(line):
+        lower = line.lower().strip()
+        if "too detailed shadow lod" in lower:
+            return "INFO"
+        if lower.startswith("convex ") and "selection faces are less then 4" in lower:
+            match = CONVEX_COMPONENT_WARNING_REGEX.match(line.strip())
+            if match:
+                path = os.path.normpath(match.group("path"))
+                path_parts = [part.lower() for part in Path(path).parts]
+                is_proxy_path = any(part in {"proxy", "proxies"} for part in path_parts[:-1]) or Path(path).stem.lower().startswith("proxy_")
+                if is_proxy_path:
+                    return "IGNORE"
+                key = os.path.normcase(path)
+                if key not in proxy_component_cache:
+                    try:
+                        proxy_component_cache[key] = extract_mlod_proxy_geometry_components(Path(path).read_bytes())
+                    except OSError:
+                        proxy_component_cache[key] = set()
+                resolution = BINARIZE_WARNING_LOD_RESOLUTIONS.get(match.group("lod").lower())
+                if resolution is not None and (resolution, match.group("component").lower()) in proxy_component_cache[key]:
+                    return "IGNORE"
+            return "WARNING"
+        return ""
+
     filtered = []
     for index, line in enumerate(lines):
         lower = line.lower()
@@ -1832,9 +1991,12 @@ def filter_binarize_output_lines(lines, has_terrain=False):
         if lower.strip() == "trying to access error value." and index > 0 and is_benign_model_cfg_line(lines[index - 1]):
             continue
         if lower.strip().startswith("warnings in "):
-            next_line = lines[index + 1] if index + 1 < len(lines) else ""
-            if not next_line or is_noise(next_line) or next_line.lower().strip().startswith("warnings in "):
-                continue
+            continue
+        severity = get_detail_severity(line)
+        if severity == "IGNORE":
+            continue
+        if severity:
+            line = severity + ": " + line
         filtered.append(line)
     return filtered
 
