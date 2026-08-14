@@ -1763,10 +1763,10 @@ def parse_tool_output_summary(tool_name, lines):
     for line in lines:
         lower = line.lower()
 
-        if "error" in lower or "cannot" in lower or "failed" in lower or "bad version" in lower:
+        if re.search(r"\b(?:errors?|cannot|failed|fatal)\b|\bbad version\b", lower):
             summary["errors"] += 1
 
-        if "warning" in lower or "unsupported" in lower:
+        if re.search(r"\bwarnings?\b|\bunsupported\b", lower):
             summary["warnings"] += 1
 
         if "missing" in lower or "cannot open" in lower or "cannot load" in lower:
@@ -1781,10 +1781,32 @@ def parse_tool_output_summary(tool_name, lines):
     return summary
 
 
+def remap_tool_output_source_paths(lines, source_dir, original_source_dir):
+    source = os.path.normpath(source_dir).rstrip("\\/")
+    original = os.path.normpath(original_source_dir).rstrip("\\/")
+
+    if not source or not original or paths_are_same(source, original):
+        return lines
+
+    pattern = re.compile(re.escape(source), re.IGNORECASE)
+    return [pattern.sub(lambda match: original, line) for line in lines]
+
+
 def filter_binarize_output_lines(lines, has_terrain=False):
+    def is_benign_model_cfg_line(line):
+        lower = line.lower()
+        return any(message in lower for message in (
+            "no entry '.sectionsinherit'.",
+            "no entry '.sections'.",
+            "no entry '/cfgmodels.default'.",
+            "size: '/' not an array",
+        ))
+
     def is_noise(line):
         lower = line.lower().strip()
         if re.match(r"^(errors|warnings):\s*0$", lower):
+            return True
+        if is_benign_model_cfg_line(line):
             return True
         if "missing in preloadconfig" in lower:
             return True
@@ -1806,6 +1828,8 @@ def filter_binarize_output_lines(lines, has_terrain=False):
     for index, line in enumerate(lines):
         lower = line.lower()
         if is_noise(line):
+            continue
+        if lower.strip() == "trying to access error value." and index > 0 and is_benign_model_cfg_line(lines[index - 1]):
             continue
         if lower.strip().startswith("warnings in "):
             next_line = lines[index + 1] if index + 1 < len(lines) else ""
@@ -1831,7 +1855,7 @@ def log_tool_output_summary(tool_name, lines, log):
 
 
 
-def run_dayz_binarize(source_dir, binarized_output_dir, binarize_exe, project_root, temp_dir, max_processes, exclude_file, log, addon_name="", addon_folders=None, has_terrain=False):
+def run_dayz_binarize(source_dir, binarized_output_dir, binarize_exe, project_root, temp_dir, max_processes, exclude_file, log, addon_name="", addon_folders=None, has_terrain=False, original_source_dir=""):
     if os.path.exists(binarized_output_dir):
         shutil.rmtree(binarized_output_dir)
     os.makedirs(binarized_output_dir, exist_ok=True)
@@ -1864,6 +1888,7 @@ def run_dayz_binarize(source_dir, binarized_output_dir, binarize_exe, project_ro
     log("")
     result = run_hidden_text_subprocess(cmd, cwd=working_dir if os.path.isdir(working_dir) else None)
     raw_output_lines = result.stdout.splitlines() if result.stdout else []
+    raw_output_lines = remap_tool_output_source_paths(raw_output_lines, source_dir, original_source_dir)
     output_lines = filter_binarize_output_lines(raw_output_lines, has_terrain)
     if output_lines:
         for line in output_lines:
@@ -2233,7 +2258,7 @@ def build_all(settings, log, progress_callback, cancel_callback=None):
 
                 try:
                     log("Running Binarize against project-aware source folder..." if job["folder_has_wrp"] else "Running Binarize against filtered staging folder...")
-                    run_dayz_binarize(binarize_source, job["binarized_dir"], binarize_exe, project_root, temp_root, max_processes, exclude_file, log, job["folder_name"], binarize_addon_folders, job["folder_has_wrp"])
+                    run_dayz_binarize(binarize_source, job["binarized_dir"], binarize_exe, project_root, temp_root, max_processes, exclude_file, log, job["folder_name"], binarize_addon_folders, job["folder_has_wrp"], job["folder_path"])
                     check_cancelled()
                     if job["folder_has_wrp"]:
                         validate_binarized_wrp_outputs(job["staging_dir"], job["binarized_dir"], log, exclusion_rules)
