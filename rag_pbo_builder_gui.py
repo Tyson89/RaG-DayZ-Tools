@@ -78,13 +78,15 @@ APP_ICON_FILE = os.path.join("assets", "installer.ico")
 
 DEFAULT_TEMP_DIR = str(Path("P:/Temp"))
 DEFAULT_PROJECT_ROOT = "P:"
-PROFILE_SCHEMA_VERSION = 4
+PROFILE_SCHEMA_VERSION = 5
 DEFAULT_PROFILE_NAME = "Default"
 PROFILE_DEFAULT_SETTINGS = {
     "source_root": "",
     "output_root": "",
     "source_root_presets": [],
     "output_root_presets": [],
+    "source_root_preset_order_customized": False,
+    "output_root_preset_order_customized": False,
     "pbo_name": "",
     "use_binarize": True,
     "convert_config": True,
@@ -320,6 +322,8 @@ def normalize_profile_settings(value):
     exclude_file_extensions, exclude_folder_names = get_exclusion_setting_values(value)
     value.setdefault("exclude_file_extensions", exclude_file_extensions)
     value.setdefault("exclude_folder_names", exclude_folder_names)
+    value.setdefault("source_root_preset_order_customized", bool(normalize_path_presets(value.get("source_root_presets", []))))
+    value.setdefault("output_root_preset_order_customized", bool(normalize_path_presets(value.get("output_root_presets", []))))
     settings = {}
     for key, default in PROFILE_DEFAULT_SETTINGS.items():
         item = value.get(key, default)
@@ -341,9 +345,11 @@ def normalize_profile_settings(value):
 
 def normalize_profile_store(value, initial_settings=None):
     value = value if isinstance(value, dict) else {}
+    stored_profiles = value.get("profiles", [])
+    profile_order_customized = bool(value.get("profile_order_customized", bool(stored_profiles)))
     profiles = []
     seen_names = set()
-    for item in value.get("profiles", []):
+    for item in stored_profiles:
         if not isinstance(item, dict):
             continue
         name = str(item.get("name", "")).strip()
@@ -363,7 +369,7 @@ def normalize_profile_store(value, initial_settings=None):
         })
     active_name = str(value.get("active_profile", DEFAULT_PROFILE_NAME)).strip()
     active = next((item["name"] for item in profiles if item["name"].casefold() == active_name.casefold()), DEFAULT_PROFILE_NAME)
-    return {"schema_version": PROFILE_SCHEMA_VERSION, "active_profile": active, "profiles": profiles}
+    return {"schema_version": PROFILE_SCHEMA_VERSION, "active_profile": active, "profile_order_customized": profile_order_customized, "profiles": profiles}
 
 
 class RaGPboBuilderApp(tk.Tk):
@@ -394,6 +400,8 @@ class RaGPboBuilderApp(tk.Tk):
 
         self.source_root_presets = normalize_path_presets(self.saved_settings.get("source_root_presets", []))
         self.output_root_presets = normalize_path_presets(self.saved_settings.get("output_root_presets", []))
+        self.source_root_preset_order_customized = bool(self.saved_settings.get("source_root_preset_order_customized", self.source_root_presets))
+        self.output_root_preset_order_customized = bool(self.saved_settings.get("output_root_preset_order_customized", self.output_root_presets))
         self.selected_addons_state = list(self.saved_settings.get("selected_addons", []))
         self.source_root_var = tk.StringVar(value=self.saved_settings.get("source_root", ""))
         self.output_root_var = tk.StringVar(value=self.saved_settings.get("output_root", self.saved_settings.get("output_addons", "")))
@@ -635,6 +643,7 @@ class RaGPboBuilderApp(tk.Tk):
         add_tooltip(self.profile_combo, "Load complete build configuration. Tool paths, private key, temp folder, worker count, and UI preferences stay global.")
         ttk.Label(profiles, textvariable=self.profile_state_var, style="FieldMuted.TLabel", width=18).pack(side="left", padx=(8, 10))
         for text, command in [
+            ("Reorder", self.reorder_profiles),
             ("New", self.new_profile),
             ("Save", self.save_active_profile),
             ("Save As", self.save_profile_as),
@@ -647,8 +656,8 @@ class RaGPboBuilderApp(tk.Tk):
 
         settings = ttk.LabelFrame(outer, text="Build settings", padding=10)
         settings.pack(fill="x", pady=(0, 10))
-        self.source_root_preset_combo = self._add_preset_folder_row(settings, 0, "Project Source", self.source_root_var, self.choose_source_root, "Folder containing your addon project. If this folder itself contains config.cpp, it will be built as one addon.", self.open_source_root_folder, self.source_root_preset_var, self.apply_source_root_preset, self.save_source_root_preset, self.delete_source_root_preset, self.get_source_root_preset_tooltip)
-        self.output_root_preset_combo = self._add_preset_folder_row(settings, 1, "Build Output", self.output_root_var, self.choose_output_root, "Build output folder. The builder creates Addons and Keys inside this folder automatically.", self.open_output_folder, self.output_root_preset_var, self.apply_output_root_preset, self.save_output_root_preset, self.delete_output_root_preset, self.get_output_root_preset_tooltip)
+        self.source_root_preset_combo = self._add_preset_folder_row(settings, 0, "Project Source", self.source_root_var, self.choose_source_root, "Folder containing your addon project. If this folder itself contains config.cpp, it will be built as one addon.", self.open_source_root_folder, self.source_root_preset_var, self.apply_source_root_preset, self.save_source_root_preset, self.delete_source_root_preset, self.reorder_source_root_presets, self.get_source_root_preset_tooltip)
+        self.output_root_preset_combo = self._add_preset_folder_row(settings, 1, "Build Output", self.output_root_var, self.choose_output_root, "Build output folder. The builder creates Addons and Keys inside this folder automatically.", self.open_output_folder, self.output_root_preset_var, self.apply_output_root_preset, self.save_output_root_preset, self.delete_output_root_preset, self.reorder_output_root_presets, self.get_output_root_preset_tooltip)
         ttk.Label(settings, text="PBO Name", style="FieldName.TLabel").grid(row=2, column=0, sticky="w", pady=3)
         pbo_entry = ttk.Entry(settings, textvariable=self.pbo_name_var)
         pbo_entry.grid(row=2, column=1, sticky="ew", pady=3, padx=(8, 8))
@@ -658,7 +667,7 @@ class RaGPboBuilderApp(tk.Tk):
         add_tooltip(pbo_hint, "Only used when exactly one addon is selected. Multi-addon builds always use each addon folder name.")
         settings.columnconfigure(1, weight=1)
         settings.columnconfigure(2, minsize=165)
-        settings.columnconfigure(3, minsize=455)
+        settings.columnconfigure(3, minsize=500)
 
         options = ttk.LabelFrame(outer, text="Build options", padding=12)
         options.pack(fill="x", pady=(0, 10))
@@ -809,7 +818,7 @@ class RaGPboBuilderApp(tk.Tk):
         add_tooltip(checkbox, tooltip)
         return checkbox
 
-    def _add_preset_folder_row(self, parent, row, label, variable, browse_command, tooltip, open_command, preset_variable, preset_selected_command, save_command, delete_command, preset_tooltip):
+    def _add_preset_folder_row(self, parent, row, label, variable, browse_command, tooltip, open_command, preset_variable, preset_selected_command, save_command, delete_command, reorder_command, preset_tooltip):
         label_widget = ttk.Label(parent, text=label, style="FieldName.TLabel")
         label_widget.grid(row=row, column=0, sticky="w", pady=3)
         add_tooltip(label_widget, tooltip)
@@ -823,7 +832,7 @@ class RaGPboBuilderApp(tk.Tk):
         browse.pack(side="left")
         open_button = ttk.Button(action_frame, text="Open", command=open_command, width=7)
         open_button.pack(side="left", padx=(6, 0))
-        preset_frame = ttk.Frame(parent, width=455, style="Card.TFrame")
+        preset_frame = ttk.Frame(parent, width=500, style="Card.TFrame")
         preset_frame.grid(row=row, column=3, sticky="e", pady=3)
         preset_frame.grid_propagate(False)
         ttk.Label(preset_frame, text="Preset", style="FieldMuted.TLabel").pack(side="left", padx=(0, 6))
@@ -833,9 +842,89 @@ class RaGPboBuilderApp(tk.Tk):
         combo.bind("<<ComboboxSelected>>", preset_selected_command)
         save = ttk.Button(preset_frame, text="Save preset", command=save_command, width=12)
         save.pack(side="left", padx=(6, 0))
+        reorder = ttk.Button(preset_frame, text="Reorder", command=reorder_command, width=8)
+        reorder.pack(side="left", padx=(6, 0))
         delete = ttk.Button(preset_frame, text="Delete", command=delete_command, width=7)
         delete.pack(side="left", padx=(6, 0))
         return combo
+
+    def show_reorder_dialog(self, title, items, selected_name=""):
+        if len(items) < 2:
+            messagebox.showinfo(APP_TITLE, "At least two entries are required to change order.")
+            return None
+        ordered = list(items)
+        result = {"items": None}
+        drag_index = {"value": None}
+
+        window = tk.Toplevel(self)
+        window.title(title)
+        window.geometry("420x480")
+        window.minsize(320, 300)
+        window.configure(bg=GRAPHITE_BG)
+        window.transient(self)
+        window.grab_set()
+
+        outer = ttk.Frame(window, padding=16)
+        outer.pack(fill="both", expand=True)
+        ttk.Label(outer, text="Drag entries into desired order.", style="FieldName.TLabel").pack(anchor="w", pady=(0, 10))
+        list_frame = ttk.Frame(outer)
+        list_frame.pack(fill="both", expand=True)
+        listbox = tk.Listbox(list_frame, selectmode="browse", exportselection=False, activestyle="none", bg=GRAPHITE_FIELD, fg=GRAPHITE_TEXT, selectbackground=GRAPHITE_ACCENT_DARK, selectforeground="#ffffff", relief="flat", borderwidth=0, highlightthickness=1, highlightbackground=GRAPHITE_BORDER, highlightcolor=GRAPHITE_ACCENT, font=("Segoe UI", 10), cursor="hand2")
+        listbox.pack(side="left", fill="both", expand=True)
+        scrollbar = ttk.Scrollbar(list_frame, command=listbox.yview)
+        scrollbar.pack(side="right", fill="y")
+        listbox.configure(yscrollcommand=scrollbar.set)
+        for item in ordered:
+            listbox.insert("end", item.get("name", ""))
+
+        selected_key = selected_name.casefold()
+        selected_index = next((i for i, item in enumerate(ordered) if item.get("name", "").casefold() == selected_key), 0)
+        listbox.selection_set(selected_index)
+        listbox.activate(selected_index)
+        listbox.see(selected_index)
+
+        def begin_drag(event):
+            index = listbox.nearest(event.y)
+            drag_index["value"] = index
+            listbox.selection_clear(0, "end")
+            listbox.selection_set(index)
+            listbox.activate(index)
+            return "break"
+
+        def drag(event):
+            index = drag_index["value"]
+            if index is None:
+                return "break"
+            if event.y < 0:
+                listbox.yview_scroll(-1, "units")
+            elif event.y >= listbox.winfo_height():
+                listbox.yview_scroll(1, "units")
+            target = listbox.nearest(max(0, min(event.y, listbox.winfo_height() - 1)))
+            if target != index:
+                item = ordered.pop(index)
+                ordered.insert(target, item)
+                listbox.delete(index)
+                listbox.insert(target, item.get("name", ""))
+                drag_index["value"] = target
+                listbox.selection_clear(0, "end")
+                listbox.selection_set(target)
+                listbox.activate(target)
+                listbox.see(target)
+            return "break"
+
+        def save_order():
+            result["items"] = ordered
+            window.destroy()
+
+        listbox.bind("<Button-1>", begin_drag)
+        listbox.bind("<B1-Motion>", drag)
+        buttons = ttk.Frame(outer)
+        buttons.pack(fill="x", pady=(12, 0))
+        ttk.Button(buttons, text="Save order", command=save_order).pack(side="right")
+        ttk.Button(buttons, text="Cancel", command=window.destroy).pack(side="right", padx=(0, 8))
+        window.protocol("WM_DELETE_WINDOW", window.destroy)
+        self.wait_window(window)
+        return result["items"]
 
     def _add_folder_row(self, parent, row, label, variable, command, tooltip=""):
         ttk.Label(parent, text=label, style="FieldName.TLabel").grid(row=row, column=0, sticky="w", pady=5)
@@ -866,6 +955,10 @@ class RaGPboBuilderApp(tk.Tk):
     def get_profile_names(self):
         return [item["name"] for item in self.profile_store.get("profiles", [])]
 
+    def sort_profiles_if_default_order(self):
+        if not self.profile_store.get("profile_order_customized", False):
+            self.profile_store["profiles"].sort(key=lambda item: item.get("name", "").casefold())
+
     def find_profile(self, name):
         name_key = str(name).strip().casefold()
         return next((item for item in self.profile_store.get("profiles", []) if item.get("name", "").casefold() == name_key), None)
@@ -876,6 +969,8 @@ class RaGPboBuilderApp(tk.Tk):
             settings[key] = getattr(self, attr_name).get()
         settings["source_root_presets"] = normalize_path_presets(self.source_root_presets)
         settings["output_root_presets"] = normalize_path_presets(self.output_root_presets)
+        settings["source_root_preset_order_customized"] = self.source_root_preset_order_customized
+        settings["output_root_preset_order_customized"] = self.output_root_preset_order_customized
         settings["selected_addons"] = self.selected_addons_state
         return normalize_profile_settings(settings)
 
@@ -926,6 +1021,8 @@ class RaGPboBuilderApp(tk.Tk):
         try:
             self.source_root_presets = settings["source_root_presets"]
             self.output_root_presets = settings["output_root_presets"]
+            self.source_root_preset_order_customized = settings["source_root_preset_order_customized"]
+            self.output_root_preset_order_customized = settings["output_root_preset_order_customized"]
             for key, attr_name in PROFILE_VAR_FIELDS.items():
                 getattr(self, attr_name).set(settings[key])
             self.selected_addons_state = settings["selected_addons"]
@@ -971,6 +1068,7 @@ class RaGPboBuilderApp(tk.Tk):
             return
         profile = {"name": name, "protected": False, "settings": normalize_profile_settings({})}
         self.profile_store["profiles"].append(profile)
+        self.sort_profiles_if_default_order()
         self.update_profile_dropdown()
         self.apply_profile(profile, confirm_switch=False)
 
@@ -996,6 +1094,7 @@ class RaGPboBuilderApp(tk.Tk):
             return
         profile = {"name": name, "protected": False, "settings": self.get_current_profile_settings()}
         self.profile_store["profiles"].append(profile)
+        self.sort_profiles_if_default_order()
         self.active_profile_name = name
         self.update_profile_dropdown()
         self.save_profile_store()
@@ -1018,6 +1117,7 @@ class RaGPboBuilderApp(tk.Tk):
             return
         old_name = profile["name"]
         profile["name"] = name
+        self.sort_profiles_if_default_order()
         self.active_profile_name = name
         self.update_profile_dropdown()
         self.save_profile_store()
@@ -1073,9 +1173,22 @@ class RaGPboBuilderApp(tk.Tk):
             self.profile_store["profiles"][index] = profile
         else:
             self.profile_store["profiles"].append(profile)
+            self.sort_profiles_if_default_order()
         self.update_profile_dropdown()
         self.apply_profile(profile, confirm_switch=False)
         self.log(f"Imported profile: {name}")
+
+    def reorder_profiles(self):
+        if not self.profile_changes_allowed():
+            return
+        profiles = self.profile_store.get("profiles", [])
+        reordered = self.show_reorder_dialog("Reorder Profiles", profiles, self.active_profile_name)
+        if not reordered or reordered == profiles:
+            return
+        self.profile_store["profiles"] = reordered
+        self.profile_store["profile_order_customized"] = True
+        self.update_profile_dropdown()
+        self.save_profile_store()
 
     def export_active_profile(self):
         profile = self.find_profile(self.active_profile_name)
@@ -1093,6 +1206,13 @@ class RaGPboBuilderApp(tk.Tk):
 
     def get_path_preset_names(self, presets):
         return [item["name"] for item in normalize_path_presets(presets) if item.get("name")]
+
+    def sort_path_presets_if_default_order(self, list_name):
+        order_attr = list_name.replace("_presets", "_preset_order_customized")
+        presets = normalize_path_presets(getattr(self, list_name, []))
+        if not getattr(self, order_attr, False):
+            presets.sort(key=lambda item: item.get("name", "").casefold())
+        setattr(self, list_name, presets)
 
     def find_preset_by_name(self, presets, name):
         name_key = str(name).strip().casefold()
@@ -1190,6 +1310,7 @@ class RaGPboBuilderApp(tk.Tk):
         if not replaced:
             new_presets.append({"name": name, "path": path})
         setattr(self, list_name, normalize_path_presets(new_presets))
+        self.sort_path_presets_if_default_order(list_name)
         preset_var.set(name)
         self.update_path_preset_dropdowns()
         self.save_path_settings()
@@ -1210,17 +1331,35 @@ class RaGPboBuilderApp(tk.Tk):
         self.save_path_settings()
         self.log(f"Deleted {label} preset: {preset['name']} -> {preset['path']}")
 
+    def reorder_path_presets(self, list_name, preset_var, title):
+        if not self.profile_changes_allowed():
+            return
+        presets = normalize_path_presets(getattr(self, list_name, []))
+        reordered = self.show_reorder_dialog(title, presets, preset_var.get().strip())
+        if not reordered or reordered == presets:
+            return
+        setattr(self, list_name, reordered)
+        setattr(self, list_name.replace("_presets", "_preset_order_customized"), True)
+        self.update_path_preset_dropdowns()
+        self.save_path_settings()
+
     def save_source_root_preset(self):
         self.save_path_preset(self.source_root_var, "source_root_presets", self.source_root_preset_var, "Project Source")
 
     def delete_source_root_preset(self):
         self.delete_path_preset(self.source_root_var, "source_root_presets", self.source_root_preset_var, "Project Source")
 
+    def reorder_source_root_presets(self):
+        self.reorder_path_presets("source_root_presets", self.source_root_preset_var, "Reorder Project Source Presets")
+
     def save_output_root_preset(self):
         self.save_path_preset(self.output_root_var, "output_root_presets", self.output_root_preset_var, "Build Output")
 
     def delete_output_root_preset(self):
         self.delete_path_preset(self.output_root_var, "output_root_presets", self.output_root_preset_var, "Build Output")
+
+    def reorder_output_root_presets(self):
+        self.reorder_path_presets("output_root_presets", self.output_root_preset_var, "Reorder Build Output Presets")
 
     def open_licence_window(self):
         window = tk.Toplevel(self)
@@ -1624,6 +1763,8 @@ class RaGPboBuilderApp(tk.Tk):
             "output_root": self.output_root_var.get().strip(),
             "source_root_presets": normalize_path_presets(self.source_root_presets),
             "output_root_presets": normalize_path_presets(self.output_root_presets),
+            "source_root_preset_order_customized": self.source_root_preset_order_customized,
+            "output_root_preset_order_customized": self.output_root_preset_order_customized,
             "pbo_name": self.pbo_name_var.get().strip(),
             "use_binarize": bool(self.use_binarize_var.get()),
             "convert_config": bool(self.convert_config_var.get()),
