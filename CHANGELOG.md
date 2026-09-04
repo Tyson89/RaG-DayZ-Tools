@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.5
+
+- Added drag-and-drop ordering for PBO Builder profiles and Project Source and Build Output presets, while preserving existing saved order.
+- New profile and preset lists use case-insensitive alphabetical order until manually reordered.
+- Grouped installed tools under RaG DayZ Tools in the Windows Start Menu.
+
 ## 1.0.4
 
 - Fixed Binarize summary severity parsing so identifiers containing words such as `failed` no longer create false errors.
