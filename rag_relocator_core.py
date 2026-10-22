@@ -27,6 +27,7 @@ TEXT_EXTENSIONS = {
     ".bat", ".c", ".cfg", ".conf", ".cpp", ".csv", ".glsl", ".h", ".hpp",
     ".html", ".imageset", ".ini", ".json", ".layout", ".md", ".proto", ".ps1",
     ".shader", ".sqf", ".sqm", ".surface", ".txt", ".xml", ".yaml", ".yml",
+    ".agr", ".agf", ".asi", ".ast", ".asy", ".ragdoll", ".emat",
 }
 BINARY_PATH_EXTENSIONS = {
     ".anm", ".bin", ".ebo", ".p3d", ".rtm", ".wrp",

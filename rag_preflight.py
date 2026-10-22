@@ -33,7 +33,7 @@ DEFAULT_TEMP_DIR = str(Path("P:/Temp"))
 DEFAULT_PROJECT_ROOT = "P:"
 
 REFERENCE_FILE_EXTENSIONS = (
-    "paa", "rvmat", "p3d", "wrp", "wss", "ogg", "cfg", "cpp", "hpp", "h", "emat", "edds", "ptc", "bisurf", "wav", "shp", "dbf", "shx", "prj",
+    "paa", "rvmat", "p3d", "wrp", "wss", "ogg", "cfg", "cpp", "hpp", "h", "emat", "edds", "ptc", "bisurf", "wav", "shp", "dbf", "shx", "prj", "agr", "agf", "asi", "ast", "asy", "anm", "xob", "ragdoll",
 )
 REFERENCE_REGEX = re.compile(
     r"[\"']([^\"']+\.(?:" + "|".join(REFERENCE_FILE_EXTENSIONS) + r"))[\"']",
@@ -48,7 +48,7 @@ P3D_INTERNAL_REFERENCE_REGEX = re.compile(
     re.IGNORECASE,
 )
 P3D_PROXY_REFERENCE_REGEX = re.compile(rb"proxy:\\([^\x00\r\n]{1,1024})", re.IGNORECASE)
-PREFLIGHT_TEXT_EXTENSIONS = (".cpp", ".hpp", ".h", ".rvmat", ".cfg", ".c", ".xml", ".json", ".layout", ".imageset")
+PREFLIGHT_TEXT_EXTENSIONS = (".cpp", ".hpp", ".h", ".rvmat", ".cfg", ".c", ".xml", ".json", ".layout", ".imageset", ".emat", ".agr", ".agf", ".asi", ".ast", ".asy", ".ragdoll")
 RISKY_REFERENCE_EXTENSIONS = {".paa", ".rvmat", ".p3d", ".wss", ".ogg", ".wav", ".emat", ".edds", ".ptc", ".bisurf"}
 SOUND_SAMPLE_FILE_EXTENSIONS = (".ogg", ".wss", ".wav")
 SOURCE_TEXTURE_EXTENSIONS = {".png", ".tga", ".psd"}
@@ -2691,6 +2691,7 @@ def preflight_check_terrain_wrp(addon_name, addon_source_dir, config_files, proj
     result.checked_terrain += 1
     result.note(log, f"Terrain/WRP addon detected: {addon_name}")
     result.note(log, "Terrain PBO detected. Server mission/world selection setup is outside the PBO and is not validated here.")
+    result.warning(log, f"DayZ 1.30 navmesh format is incompatible with older versions. Regenerate and test any navmesh for this terrain before release; RaG cannot determine navmesh version: {addon_name}")
 
     wrp_rel_paths = [os.path.relpath(path, addon_source_dir).replace(os.sep, WIN_SEP) for path in wrp_files]
 

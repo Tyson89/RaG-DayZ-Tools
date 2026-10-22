@@ -13,9 +13,10 @@ from rag_builder_common import (
     should_skip_dir,
     should_skip_file,
 )
+from pbo_core import read_pbo_archive
 
 
-def pack_pbo(source_dir, output_path, prefix, log, extra_patterns=None):
+def pack_pbo(source_dir, output_path, prefix, log, extra_patterns=None, properties=None):
     source_dir = os.path.normpath(source_dir)
     output_path = os.path.normpath(output_path)
     if not os.path.isdir(source_dir):
@@ -52,10 +53,17 @@ def pack_pbo(source_dir, output_path, prefix, log, extra_patterns=None):
     header.extend(ZERO)
     header.extend(struct.pack("<I", PBO_VERSION_MAGIC))
     header.extend(struct.pack("<IIII", 0, 0, 0, 0))
-    if prefix:
-        header.extend(b"prefix")
+    header_properties = {"prefix": prefix} if prefix else {}
+    for key, value in (properties or {}).items():
+        if key.casefold() == "prefix":
+            if str(value) != prefix:
+                raise BuildError("PBO prefix property conflicts with the selected prefix.")
+            continue
+        header_properties[key] = value
+    for key, value in header_properties.items():
+        header.extend(safe_ascii(key, "PBO property name"))
         header.extend(ZERO)
-        header.extend(safe_ascii(prefix, "PBO prefix"))
+        header.extend(safe_ascii(str(value), "PBO property value"))
         header.extend(ZERO)
     header.extend(ZERO)
     for entry in files:
@@ -124,7 +132,7 @@ def read_packed_pbo_prefix(pbo_path):
     return data[start:end].decode("ascii", errors="ignore")
 
 
-def verify_packed_pbo(pbo_path, expected_prefix, log):
+def verify_packed_pbo(pbo_path, expected_prefix, log, expected_properties=None):
     if not os.path.isfile(pbo_path):
         raise BuildError(f"Post-pack verification failed. PBO does not exist: {pbo_path}")
 
@@ -133,15 +141,18 @@ def verify_packed_pbo(pbo_path, expected_prefix, log):
     if size <= 0:
         raise BuildError(f"Post-pack verification failed. PBO is empty: {pbo_path}")
 
-    packed_prefix = read_packed_pbo_prefix(pbo_path)
+    properties = read_pbo_archive(pbo_path)["properties"]
+    packed_prefix = properties.get("prefix", "")
 
     if expected_prefix and packed_prefix and packed_prefix != expected_prefix:
         raise BuildError(f"Post-pack verification failed. PBO prefix mismatch. Expected '{expected_prefix}', got '{packed_prefix}'.")
 
     if expected_prefix and not packed_prefix:
-        log("WARNING: Post-pack verification could not read the PBO prefix from the header.")
-    else:
-        log(f"Post-pack verification OK: size={size:,} bytes, prefix={packed_prefix or '<none>'}")
+        raise BuildError("Post-pack verification failed. PBO prefix is missing from the header.")
+    for key, expected in (expected_properties or {}).items():
+        if properties.get(key) != str(expected):
+            raise BuildError(f"Post-pack verification failed. PBO property {key} mismatch.")
+    log(f"Post-pack verification OK: size={size:,} bytes, prefix={packed_prefix or '<none>'}")
 
 
 def pbo_entry_bytes_match_file(pbo_path, entry, source_file):

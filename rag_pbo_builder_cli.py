@@ -52,6 +52,7 @@ def build_parser():
     add_boolean_override(build, "convert-config", "convert_config", "Convert config.cpp to config.bin")
     add_boolean_override(build, "update-paa", "update_paa_from_sources", "Update stale PAA files")
     add_boolean_override(build, "sign", "sign_pbos", "Sign built PBOs")
+    add_boolean_override(build, "fs-shadowing", "fs_shadowing", "Allow duplicate-prefix PBO shadowing")
     add_boolean_override(build, "preflight", "preflight_before_build", "Run preflight before building")
     return parser
 
@@ -113,6 +114,7 @@ def make_settings(args, saved):
             "convert_config": True,
             "update_paa_from_sources": False,
             "sign_pbos": True,
+            "fs_shadowing": False,
             "preflight_before_build": False,
             "force_rebuild": False,
         }

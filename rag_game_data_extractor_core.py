@@ -83,6 +83,7 @@ class ArchiveSource:
     size: int
     mtime_ns: int
     priority: int
+    fs_shadowing: bool = False
 
 
 @dataclass
@@ -370,12 +371,17 @@ def build_extraction_plan(game_root, include_extensions="", exclude_extensions="
             size=stat.st_size,
             mtime_ns=stat.st_mtime_ns,
             priority=priority,
+            fs_shadowing=any(key.casefold() == "fsshadowing" and value.strip() == "1" for key, value in archive["properties"].items()),
         ))
 
     winners = {}
     shadowed = []
+    overlays = []
 
     for source in sources:
+        if source.fs_shadowing:
+            overlays.append(source)
+            continue
         key = source.prefix.replace("/", "\\").strip("\\").casefold()
         previous = winners.get(key)
 
@@ -388,6 +394,7 @@ def build_extraction_plan(game_root, include_extensions="", exclude_extensions="
             shadowed.append(source.relative_path)
 
     selected_sources = sorted(winners.values(), key=lambda item: item.relative_path.casefold())
+    selected_sources.extend(sorted(overlays, key=lambda item: (item.priority, item.relative_path.casefold())))
     plan = ExtractionPlan(
         game_root=root,
         archives=selected_sources,

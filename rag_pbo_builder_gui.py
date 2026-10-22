@@ -78,7 +78,7 @@ APP_ICON_FILE = os.path.join("assets", "installer.ico")
 
 DEFAULT_TEMP_DIR = str(Path("P:/Temp"))
 DEFAULT_PROJECT_ROOT = "P:"
-PROFILE_SCHEMA_VERSION = 5
+PROFILE_SCHEMA_VERSION = 6
 DEFAULT_PROFILE_NAME = "Default"
 PROFILE_DEFAULT_SETTINGS = {
     "source_root": "",
@@ -92,6 +92,7 @@ PROFILE_DEFAULT_SETTINGS = {
     "convert_config": True,
     "update_paa_from_sources": False,
     "sign_pbos": True,
+    "fs_shadowing": False,
     "force_rebuild": False,
     "preflight_before_build": False,
     "start_server_after_build": False,
@@ -136,6 +137,7 @@ PROFILE_VAR_FIELDS = {
     "convert_config": "convert_config_var",
     "update_paa_from_sources": "update_paa_from_sources_var",
     "sign_pbos": "sign_pbos_var",
+    "fs_shadowing": "fs_shadowing_var",
     "force_rebuild": "force_rebuild_var",
     "preflight_before_build": "preflight_before_build_var",
     "start_server_after_build": "start_server_after_build_var",
@@ -320,7 +322,7 @@ def normalize_profile_settings(value):
     if "pbo_name" not in value and value.get("prefix_root"):
         value["pbo_name"] = value["prefix_root"]
     exclude_file_extensions, exclude_folder_names = get_exclusion_setting_values(value)
-    value.setdefault("exclude_file_extensions", exclude_file_extensions)
+    value["exclude_file_extensions"] = exclude_file_extensions
     value.setdefault("exclude_folder_names", exclude_folder_names)
     value.setdefault("source_root_preset_order_customized", bool(normalize_path_presets(value.get("source_root_presets", []))))
     value.setdefault("output_root_preset_order_customized", bool(normalize_path_presets(value.get("output_root_presets", []))))
@@ -412,6 +414,7 @@ class RaGPboBuilderApp(tk.Tk):
         self.convert_config_var = tk.BooleanVar(value=self.saved_settings.get("convert_config", True))
         self.update_paa_from_sources_var = tk.BooleanVar(value=self.saved_settings.get("update_paa_from_sources", False))
         self.sign_pbos_var = tk.BooleanVar(value=self.saved_settings.get("sign_pbos", True))
+        self.fs_shadowing_var = tk.BooleanVar(value=self.saved_settings.get("fs_shadowing", False))
         self.force_rebuild_var = tk.BooleanVar(value=self.saved_settings.get("force_rebuild", False))
         self.preflight_before_build_var = tk.BooleanVar(value=self.saved_settings.get("preflight_before_build", False))
         self.start_server_after_build_var = tk.BooleanVar(value=self.saved_settings.get("start_server_after_build", False))
@@ -680,6 +683,7 @@ class RaGPboBuilderApp(tk.Tk):
         self._add_checkbutton(options, "Sign PBOs", self.sign_pbos_var, 0, 3, "Sign built PBOs with DSSignFile.exe and your .biprivatekey.")
         self._add_checkbutton(options, "Update PAA", self.update_paa_from_sources_var, 0, 4, "Use ImageToPAA.exe to update missing or stale staged .paa files from newer .png/.tga source textures. Source files are not overwritten.")
         self._add_checkbutton(options, "Start local server", self.start_server_after_build_var, 0, 5, "Start the configured local server launcher only after the full build or preset batch succeeds.")
+        self._add_checkbutton(options, "PBO shadowing", self.fs_shadowing_var, 1, 4, "Add fsShadowing=1 to each built PBO header. DayZ 1.30+ then loads the PBO even if another PBO uses the same virtual prefix, allowing Enfusion resource variants (such as .layout files) to override matching files. Enable only for intentional same-prefix overrides; leave off for normal mods.")
         ttk.Label(options, text="Safety", style="FieldMuted.TLabel").grid(row=1, column=0, sticky="w", pady=(0, 5), padx=(0, 14))
         self._add_checkbutton(options, "Force rebuild", self.force_rebuild_var, 1, 1, "Ignore the build cache, refresh selected addon temp folders, and rebuild all selected addons.")
         self._add_checkbutton(options, "Preflight before build", self.preflight_before_build_var, 1, 2, "Run syntax and path checks before building. Errors stop the build; warnings only get logged.", columnspan=2)
@@ -1770,6 +1774,7 @@ class RaGPboBuilderApp(tk.Tk):
             "convert_config": bool(self.convert_config_var.get()),
             "update_paa_from_sources": bool(self.update_paa_from_sources_var.get()),
             "sign_pbos": bool(self.sign_pbos_var.get()),
+            "fs_shadowing": bool(self.fs_shadowing_var.get()),
             "force_rebuild": bool(self.force_rebuild_var.get()),
             "preflight_before_build": bool(self.preflight_before_build_var.get()),
             "start_server_after_build": bool(self.start_server_after_build_var.get()),
@@ -2020,6 +2025,7 @@ class RaGPboBuilderApp(tk.Tk):
             "convert_config": bool(self.convert_config_var.get()),
             "update_paa_from_sources": bool(self.update_paa_from_sources_var.get()),
             "sign_pbos": bool(self.sign_pbos_var.get()),
+            "fs_shadowing": bool(self.fs_shadowing_var.get()),
             "force_rebuild": bool(self.force_rebuild_var.get()),
             "preflight_before_build": bool(self.preflight_before_build_var.get()),
             "start_server_after_build": bool(self.start_server_after_build_var.get()),

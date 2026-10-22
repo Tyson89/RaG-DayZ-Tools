@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.0.6
+
+- Added optional DayZ 1.30 `fsShadowing=1` PBO header support to PBO Builder, with a profile-backed checkbox, CLI switches, and a tooltip explaining when to use it.
+- Included PBO shadowing in build-cache validation and made post-pack verification fail if the prefix or requested header properties are missing or incorrect.
+- Updated Game Data Extractor to merge `fsShadowing` archives with same-prefix archives at file level instead of discarding them; extraction logs report overlay and overridden-path counts.
+- Excluded generated `.p3dcache` files from PBOs, including builds using older saved exclusion settings.
+- Expanded Preflight reference checks and Mod Relocator text handling for DayZ 1.30 animation and Enfusion formats (`.agr`, `.agf`, `.asi`, `.ast`, `.asy`, `.ragdoll`, `.emat`); Preflight also recognizes `.anm` and `.xob` references.
+- Added a Preflight warning that older navmesh data is incompatible with DayZ 1.30 and must be regenerated and tested for terrain releases.
+- Displayed all PBO header properties in PBO Inspector's log.
+
 ## 1.0.5
 
 - Added drag-and-drop ordering for PBO Builder profiles and Project Source and Build Output presets, while preserving existing saved order.

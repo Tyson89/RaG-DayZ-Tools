@@ -569,6 +569,8 @@ class PboInspectorApp(DND_ROOT_CLASS):
         self.summary_var.set(f"{len(self.entries)} file(s), {format_byte_size(total_bytes)}, prefix: {prefix or '<none>'}, footer: {format_byte_size(footer)}{compressed_text}{unsupported_text}")
         self.log(f"Loaded: {pbo_path}")
         self.log(f"Files: {len(self.entries)}, payload: {format_byte_size(total_bytes)}, prefix: {prefix or '<none>'}")
+        for key, value in archive["properties"].items():
+            self.log(f"PBO property: {key}={value}")
 
         if compressed:
             self.log(f"Compressed entries supported: {compressed}. They will be decompressed for preview and extraction.")

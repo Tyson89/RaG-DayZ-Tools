@@ -1593,6 +1593,7 @@ def compute_addon_state_hash(source_dir, prefix, settings, extra_patterns=None, 
         "use_binarize": bool(settings["use_binarize"]),
         "convert_config": bool(settings["convert_config"]),
         "sign_pbos": bool(settings["sign_pbos"]),
+        "fs_shadowing": bool(settings.get("fs_shadowing", False)),
         "project_root": settings["project_root"],
         "exclude_file_extensions": get_exclusion_setting_values(settings)[0],
         "exclude_folder_names": get_exclusion_setting_values(settings)[1],
@@ -2440,9 +2441,10 @@ def build_all(settings, log, progress_callback, cancel_callback=None):
             check_cancelled()
             log(f"PBO Name:   {os.path.basename(job['output_pbo'])}")
             log(f"PBO prefix: {job['prefix']}")
-            pack_pbo(job["pack_source"], job["temp_output_pbo"], job["prefix"], log, exclusion_rules)
+            pbo_properties = {"fsShadowing": "1"} if settings.get("fs_shadowing", False) else {}
+            pack_pbo(job["pack_source"], job["temp_output_pbo"], job["prefix"], log, exclusion_rules, pbo_properties)
             check_cancelled()
-            verify_packed_pbo(job["temp_output_pbo"], job["prefix"], log)
+            verify_packed_pbo(job["temp_output_pbo"], job["prefix"], log, pbo_properties)
             verify_packed_wrp_entries(job["temp_output_pbo"], job["pack_source"], job["folder_path"], job["prefix"], project_root, exclusion_rules, log)
             check_cancelled()
             if sign_pbos:

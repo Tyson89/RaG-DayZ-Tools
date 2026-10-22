@@ -14,8 +14,8 @@ class BuildCancelled(BuildError):
 
 EXCLUDE_DIRS = {".git", ".svn", ".vscode", ".idea", "__pycache__"}
 EXCLUDE_FILES = {".gitignore", ".gitattributes", "thumbs.db", "desktop.ini", ".ds_store", "$prefix$", "$pboprefix$", "$prefix$.txt", "$pboprefix$.txt"}
-EXCLUDE_EXTENSIONS = {".delete"}
-DEFAULT_EXCLUDE_FILE_EXTENSIONS = ".h,.hpp,.png,.cpp,.txt,.dep,.bak,.log,.pew,.tga,.bat,.psd,.cmd,.mcr,.fbx,.max"
+EXCLUDE_EXTENSIONS = {".delete", ".p3dcache"}
+DEFAULT_EXCLUDE_FILE_EXTENSIONS = ".h,.hpp,.png,.cpp,.txt,.dep,.bak,.log,.pew,.tga,.bat,.psd,.cmd,.mcr,.fbx,.max,.p3dcache"
 DEFAULT_EXCLUDE_FOLDER_NAMES = "source,temp"
 
 ZERO = bytes([0])
@@ -82,6 +82,9 @@ def get_exclusion_setting_values(settings):
         folder_names = ",".join(dict.fromkeys(parse_exclude_folder_names(
             DEFAULT_EXCLUDE_FOLDER_NAMES + "," + ",".join(legacy_folders)
         )))
+
+    if ".p3dcache" not in parse_exclude_file_extensions(file_extensions):
+        file_extensions = file_extensions + ("," if file_extensions else "") + ".p3dcache"
 
     return file_extensions, folder_names
 

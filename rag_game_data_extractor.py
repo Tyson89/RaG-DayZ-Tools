@@ -609,6 +609,10 @@ class GameDataExtractorApp(tk.Tk):
         if plan.shadowed_archives:
             self.log(f"DLC overrides: {len(plan.shadowed_archives)} base archive(s) skipped.")
 
+        overlays = sum(source.fs_shadowing for source in plan.archives)
+        if overlays:
+            self.log(f"PBO shadowing: {overlays} overlay archive(s) merged; {len(plan.conflicts)} entry path(s) overridden.")
+
         if plan.protected_archives:
             self.log(f"Protected EBO skipped: {', '.join(plan.protected_archives)}")
 
