@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.0.7
+
+- Added Nasdara road parts and HV3/VHV powerline source assets from DayZ-Misc, with correct virtual paths and updated extraction estimates.
+- Made the DayZ subfolder in extracted script modules optional, disabled by default, and saved the setting.
+- Fixed Binarize access-violation detection for decimal, signed, and hexadecimal exit codes, and removed false signing diagnoses caused by normal key/signature log messages.
+- Limited the default Binarize config scan to DZ under Project root when present; explicit scan folders replace the default, invalid folders stop the build, and scope changes invalidate the build cache.
+- Added the --binarize-addon-folders CLI option and updated the GUI's scan-folder guidance.
+
 ## 1.0.6
 
 - Added optional DayZ 1.30 `fsShadowing=1` PBO header support to PBO Builder, with a profile-backed checkbox, CLI switches, and a tooltip explaining when to use it.

@@ -2,7 +2,7 @@
 
 Free Windows toolkit for DayZ modders, terrain makers, and server owners.
 
-- **Version:** 1.0.6 Stable
+- **Version:** 1.0.7 Stable
 - **Author:** RaG Tyson
 - **Documentation:** [RaG DayZ Tools Wiki](https://github.com/Tyson89/RaG-DayZ-Tools/wiki)
 - **Downloads:** [GitHub Releases](https://github.com/Tyson89/RaG-DayZ-Tools/releases)
