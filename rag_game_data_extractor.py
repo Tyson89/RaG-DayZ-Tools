@@ -52,6 +52,60 @@ GRAPHITE_SUCCESS_DARK = "#41684a"
 PROFILES = ("Everything", "Scripts only")
 
 
+class ToolTip:
+    def __init__(self, widget, text, delay_ms=500):
+        self.widget = widget
+        self.text = text
+        self.delay_ms = delay_ms
+        self.after_id = None
+        self.window = None
+        widget.bind("<Enter>", self.schedule, add="+")
+        widget.bind("<FocusIn>", self.schedule, add="+")
+        widget.bind("<Leave>", self.hide, add="+")
+        widget.bind("<FocusOut>", self.hide, add="+")
+        widget.bind("<ButtonPress>", self.hide, add="+")
+        widget.bind("<Destroy>", self.hide, add="+")
+
+    def schedule(self, event=None):
+        self.cancel()
+        self.after_id = self.widget.after(self.delay_ms, self.show)
+
+    def cancel(self):
+        if self.after_id:
+            try:
+                self.widget.after_cancel(self.after_id)
+            except tk.TclError:
+                pass
+            self.after_id = None
+
+    def show(self):
+        self.after_id = None
+        if self.window or not self.text or not self.widget.winfo_exists():
+            return
+        self.window = tk.Toplevel(self.widget)
+        self.window.wm_overrideredirect(True)
+        self.window.configure(bg=GRAPHITE_BORDER)
+        label = tk.Label(self.window, text=self.text, justify="left", bg=GRAPHITE_FIELD, fg=GRAPHITE_TEXT, relief="flat", borderwidth=0, padx=8, pady=5, font=("Segoe UI", 9), wraplength=520)
+        label.pack(ipadx=1, ipady=1)
+        self.window.update_idletasks()
+        x = min(self.widget.winfo_rootx() + 20, self.widget.winfo_screenwidth() - self.window.winfo_reqwidth() - 8)
+        y = self.widget.winfo_rooty() + self.widget.winfo_height() + 8
+        if y + self.window.winfo_reqheight() > self.widget.winfo_screenheight():
+            y = self.widget.winfo_rooty() - self.window.winfo_reqheight() - 8
+        self.window.wm_geometry(f"+{max(0, x)}+{max(0, y)}")
+
+    def hide(self, event=None):
+        self.cancel()
+        if self.window:
+            self.window.destroy()
+            self.window = None
+
+
+def add_tooltip(widget, text):
+    widget.tooltip = ToolTip(widget, text) if text else None
+    return widget.tooltip
+
+
 def get_settings_path():
     base = os.environ.get("LOCALAPPDATA")
     folder = (Path(base) if base else Path.home()) / "RaG_Game_Data_Extractor"
@@ -93,6 +147,7 @@ class GameDataExtractorApp(tk.Tk):
         self.busy = False
         self.estimate_generation = 0
         self.installations = {}
+        self.option_checkbuttons = []
         detected_cfgconvert = find_cfgconvert()
         saved_output = self.settings.get("output_path", "")
         legacy_output = str(Path.home() / "DayZ Extracted")
@@ -108,6 +163,7 @@ class GameDataExtractorApp(tk.Tk):
         self.cfgconvert_var = tk.StringVar(value=self.settings.get("cfgconvert_exe", detected_cfgconvert))
         self.include_dayz_misc_var = tk.BooleanVar(value=self.settings.get("include_dayz_misc", False))
         self.create_dayz_script_folder_var = tk.BooleanVar(value=self.settings.get("create_dayz_script_folder", False))
+        self.clean_base_game_folders_var = tk.BooleanVar(value=self.settings.get("clean_base_game_folders", True))
         self.summary_var = tk.StringVar(value="Calculating estimated output...")
         self.status_var = tk.StringVar(value="Detecting game data...")
         self.progress_var = tk.DoubleVar(value=0)
@@ -132,7 +188,7 @@ class GameDataExtractorApp(tk.Tk):
         screen_width = self.winfo_screenwidth()
         screen_height = self.winfo_screenheight()
         width = min(1100, max(900, screen_width - 120))
-        height = min(840, max(700, screen_height - 140))
+        height = min(700, max(680, screen_height - 140))
         left = max(0, (screen_width - width) // 2)
         top = max(0, (screen_height - height) // 2)
         self.geometry(f"{width}x{height}+{left}+{top}")
@@ -149,6 +205,10 @@ class GameDataExtractorApp(tk.Tk):
             pass
 
     def apply_theme(self):
+        self.option_add("*TCombobox*Listbox.background", GRAPHITE_FIELD)
+        self.option_add("*TCombobox*Listbox.foreground", GRAPHITE_TEXT)
+        self.option_add("*TCombobox*Listbox.selectBackground", GRAPHITE_ACCENT_DARK)
+        self.option_add("*TCombobox*Listbox.selectForeground", "#ffffff")
         style = ttk.Style(self)
 
         try:
@@ -164,6 +224,7 @@ class GameDataExtractorApp(tk.Tk):
             font=("Segoe UI", 10),
         )
         style.configure("TFrame", background=GRAPHITE_BG)
+        style.configure("Card.TFrame", background=GRAPHITE_CARD)
         style.configure(
             "TLabelframe",
             background=GRAPHITE_CARD,
@@ -179,6 +240,7 @@ class GameDataExtractorApp(tk.Tk):
             font=("Segoe UI", 10, "bold"),
         )
         style.configure("Card.TLabel", background=GRAPHITE_CARD, foreground=GRAPHITE_TEXT)
+        style.configure("CardMuted.TLabel", background=GRAPHITE_CARD, foreground=GRAPHITE_MUTED)
         style.configure("Muted.TLabel", background=GRAPHITE_BG, foreground=GRAPHITE_MUTED)
         style.configure(
             "TEntry",
@@ -186,25 +248,51 @@ class GameDataExtractorApp(tk.Tk):
             foreground=GRAPHITE_TEXT,
             insertcolor=GRAPHITE_TEXT,
             bordercolor=GRAPHITE_BORDER,
-            padding=7,
+            lightcolor=GRAPHITE_FIELD,
+            darkcolor=GRAPHITE_FIELD,
+            relief="flat",
+            padding=5,
         )
         style.configure(
             "TCombobox",
             fieldbackground=GRAPHITE_FIELD,
             background=GRAPHITE_FIELD,
             foreground=GRAPHITE_TEXT,
+            selectbackground=GRAPHITE_FIELD,
+            selectforeground=GRAPHITE_TEXT,
             arrowcolor=GRAPHITE_MUTED,
-            padding=6,
+            bordercolor=GRAPHITE_BORDER,
+            lightcolor=GRAPHITE_FIELD,
+            darkcolor=GRAPHITE_FIELD,
+            focuscolor=GRAPHITE_FIELD,
+            focusthickness=0,
+            relief="flat",
+            padding=5,
         )
-        style.map("TCombobox", fieldbackground=[("readonly", GRAPHITE_FIELD)])
+        style.map(
+            "TCombobox",
+            fieldbackground=[("readonly", GRAPHITE_FIELD), ("disabled", GRAPHITE_CARD), ("!disabled", GRAPHITE_FIELD)],
+            background=[("readonly", GRAPHITE_FIELD), ("active", GRAPHITE_CARD_SOFT), ("!disabled", GRAPHITE_FIELD)],
+            foreground=[("readonly", GRAPHITE_TEXT), ("disabled", GRAPHITE_MUTED), ("!disabled", GRAPHITE_TEXT)],
+            selectbackground=[("readonly", GRAPHITE_FIELD), ("!disabled", GRAPHITE_FIELD)],
+            selectforeground=[("readonly", GRAPHITE_TEXT), ("!disabled", GRAPHITE_TEXT)],
+            bordercolor=[("focus", GRAPHITE_ACCENT), ("!focus", GRAPHITE_BORDER)],
+            arrowcolor=[("active", GRAPHITE_TEXT), ("!disabled", GRAPHITE_MUTED)],
+        )
         style.configure(
             "TButton",
             background=GRAPHITE_CARD_SOFT,
             foreground=GRAPHITE_TEXT,
             bordercolor=GRAPHITE_CARD_SOFT,
+            lightcolor=GRAPHITE_CARD_SOFT,
+            darkcolor=GRAPHITE_CARD_SOFT,
+            focuscolor=GRAPHITE_CARD_SOFT,
+            focusthickness=0,
+            relief="flat",
             padding=(12, 8),
         )
         style.map("TButton", background=[("active", GRAPHITE_BORDER)], foreground=[("disabled", GRAPHITE_MUTED)])
+        style.configure("Path.TButton", padding=(12, 4))
         style.configure("TCheckbutton", background=GRAPHITE_CARD, foreground=GRAPHITE_TEXT, padding=3)
         style.map("TCheckbutton", background=[("active", GRAPHITE_CARD)])
         style.configure(
@@ -214,25 +302,54 @@ class GameDataExtractorApp(tk.Tk):
             bordercolor=GRAPHITE_FIELD,
         )
 
-    def make_button(self, parent, text, command, primary=False):
-        if not primary:
-            return ttk.Button(parent, text=text, command=command)
-
-        return tk.Button(
+    def make_button(self, parent, text, command, primary=False, tooltip="", variant=""):
+        bg = GRAPHITE_ACCENT_DARK if primary or variant == "stop" else GRAPHITE_CARD_SOFT
+        active_bg = GRAPHITE_ACCENT if primary or variant == "stop" else GRAPHITE_BORDER
+        button = tk.Button(
             parent,
             text=text,
             command=command,
-            bg=GRAPHITE_ACCENT_DARK,
-            fg="#ffffff",
-            activebackground=GRAPHITE_ACCENT,
-            activeforeground="#ffffff",
+            bg=bg,
+            fg="#ffffff" if primary else GRAPHITE_TEXT,
+            activebackground=active_bg,
+            activeforeground=GRAPHITE_TEXT,
+            disabledforeground=GRAPHITE_MUTED,
             relief="flat",
             borderwidth=0,
             padx=16,
-            pady=8,
-            font=("Segoe UI", 9, "bold"),
+            pady=6,
+            font=("Segoe UI", 10, "bold" if primary else "normal"),
             cursor="hand2",
         )
+        button.bind("<Enter>", lambda event: button.configure(bg=active_bg) if str(button.cget("state")) != "disabled" else None, add="+")
+        button.bind("<Leave>", lambda event: button.configure(bg=bg), add="+")
+        add_tooltip(button, tooltip)
+        return button
+
+    def _add_checkbutton(self, parent, text, variable, row, column, tooltip, command=None, columnspan=1):
+        def refresh(*_args):
+            selected = variable.get()
+            checkbox.configure(
+                text=("✓ " if selected else "  ") + text,
+                bg=GRAPHITE_CARD_SOFT if selected else GRAPHITE_FIELD,
+                fg=GRAPHITE_TEXT if selected else GRAPHITE_MUTED,
+                activebackground=GRAPHITE_BORDER if selected else GRAPHITE_CARD_SOFT,
+                activeforeground=GRAPHITE_TEXT,
+            )
+
+        def on_toggle():
+            self.save_current_settings()
+            if command:
+                command()
+
+        checkbox = tk.Checkbutton(parent, variable=variable, command=on_toggle, indicatoron=False, selectcolor=GRAPHITE_CARD_SOFT, relief="flat", borderwidth=0, padx=12, pady=7, font=("Segoe UI", 10), cursor="hand2", anchor="w", justify="left", width=max(22, len(text) + 3), takefocus=True, disabledforeground=GRAPHITE_MUTED)
+        checkbox.grid(row=row, column=column, columnspan=columnspan, sticky="w", pady=(0, 6), padx=(0, 8))
+        trace_id = variable.trace_add("write", refresh)
+        checkbox.bind("<Destroy>", lambda event: variable.trace_remove("write", trace_id), add="+")
+        refresh()
+        add_tooltip(checkbox, tooltip)
+        self.option_checkbuttons.append(checkbox)
+        return checkbox
 
     def make_update_button(self, parent):
         button = tk.Button(
@@ -253,13 +370,14 @@ class GameDataExtractorApp(tk.Tk):
         button.pack(side="right", padx=(0, 8))
         button.bind("<Enter>", lambda event: button.configure(bg=GRAPHITE_SUCCESS), add="+")
         button.bind("<Leave>", lambda event: button.configure(bg=GRAPHITE_SUCCESS_DARK), add="+")
+        add_tooltip(button, "Open RaG Tools Updater to check for suite updates.")
         return button
 
     def build_ui(self):
-        outer = ttk.Frame(self, padding=16)
+        outer = ttk.Frame(self, padding=12)
         outer.pack(fill="both", expand=True)
         header = tk.Frame(outer, bg=GRAPHITE_HEADER)
-        header.pack(fill="x", pady=(0, 10), ipady=7)
+        header.pack(fill="x", pady=(0, 8), ipady=4)
         title_area = tk.Frame(header, bg=GRAPHITE_HEADER)
         title_area.pack(side="left", fill="x", expand=True, padx=14)
         tk.Label(
@@ -286,103 +404,116 @@ class GameDataExtractorApp(tk.Tk):
             font=("Segoe UI", 9),
         ).pack(side="right")
         self.make_update_button(right)
-        make_licence_button(right, self)
+        add_tooltip(make_licence_button(right, self), "View the RaG DayZ Tools licence.")
 
-        paths = ttk.LabelFrame(outer, text="Game data")
-        paths.pack(fill="x", pady=(0, 10))
+        paths = ttk.LabelFrame(outer, text="Game data", padding=(12, 8))
+        paths.pack(fill="x", pady=(0, 8))
         paths.columnconfigure(1, weight=1)
-        ttk.Label(paths, text="Detected install", style="Card.TLabel").grid(row=0, column=0, sticky="w", pady=4)
+        ttk.Label(paths, text="Detected install", style="Card.TLabel").grid(row=0, column=0, sticky="w", pady=2)
         self.install_combo = ttk.Combobox(paths, textvariable=self.install_var, state="readonly")
-        self.install_combo.grid(row=0, column=1, sticky="ew", padx=8, pady=4)
+        self.install_combo.grid(row=0, column=1, sticky="ew", padx=8, pady=2)
         self.install_combo.bind("<<ComboboxSelected>>", self.on_install_selected)
-        self.detect_button = ttk.Button(paths, text="Detect", command=self.detect_installations)
-        self.detect_button.grid(row=0, column=2, pady=4)
-        ttk.Label(paths, text="DayZ folder", style="Card.TLabel").grid(row=1, column=0, sticky="w", pady=4)
+        add_tooltip(self.install_combo, "Choose a detected DayZ Stable or Experimental installation. Use Detect to refresh Steam installations, or browse for the DayZ folder manually.")
+        self.detect_button = ttk.Button(paths, text="Detect", command=self.detect_installations, style="Path.TButton")
+        self.detect_button.grid(row=0, column=2, pady=2)
+        add_tooltip(self.detect_button, "Search Steam libraries for DayZ Stable and Experimental installations.")
+        ttk.Label(paths, text="DayZ folder", style="Card.TLabel").grid(row=1, column=0, sticky="w", pady=2)
         game_entry = ttk.Entry(paths, textvariable=self.game_path_var)
-        game_entry.grid(row=1, column=1, sticky="ew", padx=8, pady=4)
+        game_entry.grid(row=1, column=1, sticky="ew", padx=8, pady=2)
         game_entry.bind("<Return>", lambda event: self.request_estimate())
         game_entry.bind("<FocusOut>", lambda event: self.request_estimate())
-        ttk.Button(paths, text="Browse", command=self.choose_game_path).grid(row=1, column=2, pady=4)
-        ttk.Label(paths, text="Extract to", style="Card.TLabel").grid(row=2, column=0, sticky="w", pady=4)
-        ttk.Entry(paths, textvariable=self.output_path_var).grid(row=2, column=1, sticky="ew", padx=8, pady=4)
-        ttk.Button(paths, text="Browse", command=self.choose_output_path).grid(row=2, column=2, pady=4)
+        add_tooltip(game_entry, "DayZ installation containing Addons and dta. Official DLC archives are included when installed; protected EBO archives are skipped.")
+        game_browse = ttk.Button(paths, text="Browse", command=self.choose_game_path, style="Path.TButton")
+        game_browse.grid(row=1, column=2, pady=2)
+        add_tooltip(game_browse, "Choose the DayZ installation folder to extract.")
+        ttk.Label(paths, text="Extract to", style="Card.TLabel").grid(row=2, column=0, sticky="w", pady=2)
+        output_entry = ttk.Entry(paths, textvariable=self.output_path_var)
+        output_entry.grid(row=2, column=1, sticky="ew", padx=8, pady=2)
+        add_tooltip(output_entry, "Destination work drive or folder, usually P:\\. Data is placed into its virtual paths, such as DZ and scripts. Existing matching files are overwritten. Cleanup can also remove existing official folders and all their contents.")
+        output_browse = ttk.Button(paths, text="Browse", command=self.choose_output_path, style="Path.TButton")
+        output_browse.grid(row=2, column=2, pady=2)
+        add_tooltip(output_browse, "Choose the destination work drive or extraction folder.")
+        ttk.Label(paths, text="CfgConvert.exe", style="Card.TLabel").grid(row=3, column=0, sticky="w", pady=2)
+        cfg_entry = ttk.Entry(paths, textvariable=self.cfgconvert_var)
+        cfg_entry.grid(row=3, column=1, sticky="ew", padx=8, pady=2)
+        add_tooltip(cfg_entry, "DayZ Tools CfgConvert.exe converts extracted binary configs and supported rapified materials into editable text. Required when the extraction includes conversion candidates.")
+        cfg_browse = ttk.Button(paths, text="Browse", command=self.choose_cfgconvert, style="Path.TButton")
+        cfg_browse.grid(row=3, column=2, pady=2)
+        add_tooltip(cfg_browse, "Locate CfgConvert.exe in the DayZ Tools installation.")
 
-        options = ttk.LabelFrame(outer, text="Options")
-        options.pack(fill="x", pady=(0, 10))
-        options.columnconfigure(1, weight=1)
-        ttk.Label(options, text="Profile", style="Card.TLabel").grid(row=0, column=0, sticky="w", pady=4)
+        options = ttk.LabelFrame(outer, text="Extraction options", padding=(12, 8))
+        options.pack(fill="x", pady=(0, 8))
+        for column in range(3):
+            options.columnconfigure(column, weight=1)
+        profile_frame = ttk.Frame(options, style="Card.TFrame")
+        profile_frame.grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 6))
+        ttk.Label(profile_frame, text="Profile", style="Card.TLabel").pack(side="left", padx=(0, 12))
         profile_combo = ttk.Combobox(
-            options,
+            profile_frame,
             textvariable=self.profile_var,
             values=PROFILES,
             state="readonly",
             width=24,
         )
-        profile_combo.grid(row=0, column=1, sticky="w", padx=8, pady=4)
+        profile_combo.pack(side="left")
         profile_combo.bind("<<ComboboxSelected>>", self.on_profile_selected)
-        ttk.Checkbutton(
-            options,
-            text="Include official DayZ-Misc source assets (ADPL-SA)",
-            variable=self.include_dayz_misc_var,
-            command=self.on_dayz_misc_changed,
-        ).grid(row=1, column=0, columnspan=2, sticky="w", pady=4)
-        ttk.Button(
+        add_tooltip(profile_combo, "Everything extracts all supported archive files. Scripts only extracts .c files and only cleans scripts. Enabling DayZ-Misc also installs source assets under DZ, including with Scripts only.")
+        self._add_checkbutton(options, "DayZ-Misc sources", self.include_dayz_misc_var, 1, 0, "Download official Bohemia Interactive source assets from DayZ-Misc and overlay them after extraction. Includes road parts for Chernarus, Livonia, Sakhal and Nasdara, powerlines, water objects, body parts, proxies and animations. Assets use ADPL-SA; the upstream README is included.", self.on_dayz_misc_changed)
+        self._add_checkbutton(options, "DayZ script folders", self.create_dayz_script_folder_var, 1, 1, "Create a DayZ subfolder inside each official script module, such as scripts\\4_World\\DayZ. Disabled by default to preserve the archive layout. Existing DayZ nesting is not duplicated.", self.request_estimate)
+        github_button = ttk.Button(
             options,
             text="GitHub",
             command=lambda: webbrowser.open(DAYZ_MISC_REPO_URL),
-        ).grid(row=1, column=2, sticky="e", pady=4)
-        ttk.Checkbutton(
+        )
+        github_button.grid(row=0, column=2, sticky="e", pady=(0, 6))
+        add_tooltip(github_button, "Open the official Bohemia Interactive DayZ-Misc repository and its ADPL-SA licence.")
+        self._add_checkbutton(options, "Clean base-game folders", self.clean_base_game_folders_var, 1, 2, "Enabled by default. Before extraction, delete existing official folders being extracted: DZ, scripts, Core, bin, graphics, gui, languagecore and system. All contents inside those selected folders are deleted, including custom subfolders. Custom folders outside them are preserved. Scripts only leaves other official folders untouched unless DayZ-Misc is enabled. Linked roots and folders containing source data are rejected.")
+        ttk.Label(
             options,
-            text="Create DayZ subfolder in script modules",
-            variable=self.create_dayz_script_folder_var,
-            command=self.request_estimate,
-        ).grid(row=2, column=0, columnspan=3, sticky="w", pady=4)
-        ttk.Label(options, text="CfgConvert.exe", style="Card.TLabel").grid(row=3, column=0, sticky="w", pady=4)
-        cfg_frame = ttk.Frame(options)
-        cfg_frame.grid(row=3, column=1, columnspan=2, sticky="ew", padx=8, pady=4)
-        cfg_frame.columnconfigure(0, weight=1)
-        ttk.Entry(cfg_frame, textvariable=self.cfgconvert_var).grid(row=0, column=0, sticky="ew")
-        ttk.Button(cfg_frame, text="Browse", command=self.choose_cfgconvert).grid(row=0, column=1, padx=(8, 0))
+            text="Cleanup deletes all contents inside selected official folders. Custom root folders are preserved.",
+            style="CardMuted.TLabel",
+            wraplength=760,
+        ).grid(row=2, column=0, columnspan=3, sticky="w")
 
         estimate = tk.Frame(outer, bg=GRAPHITE_CARD, highlightbackground=GRAPHITE_BORDER, highlightthickness=1)
-        estimate.pack(fill="x", pady=(0, 10))
+        estimate.pack(fill="x", pady=(0, 8))
         tk.Label(
             estimate,
             text="ESTIMATED OUTPUT",
             bg=GRAPHITE_CARD,
             fg=GRAPHITE_MUTED,
             font=("Segoe UI", 8, "bold"),
-        ).pack(anchor="w", padx=12, pady=(9, 0))
+        ).pack(side="left", padx=12, pady=9)
         tk.Label(
             estimate,
             textvariable=self.summary_var,
             bg=GRAPHITE_CARD,
             fg=GRAPHITE_TEXT,
-            font=("Segoe UI", 12, "bold"),
-        ).pack(anchor="w", padx=12, pady=(1, 9))
+            font=("Segoe UI", 11, "bold"),
+        ).pack(side="left", padx=(4, 12), pady=9)
 
         actions = ttk.Frame(outer)
-        actions.pack(fill="x", pady=(0, 10))
-        self.extract_button = self.make_button(actions, "Extract Game Data", self.extract, primary=True)
+        actions.pack(fill="x", pady=(0, 6))
+        self.extract_button = self.make_button(actions, "Extract Game Data", self.extract, primary=True, tooltip="Extract the selected profile into the destination folder using all available CPU cores. When cleanup is enabled, selected official folders and all their contents are deleted first.")
         self.extract_button.pack(side="left", padx=(0, 8))
         self.extract_button.configure(state="disabled")
-        self.stop_button = self.make_button(actions, "Stop", self.stop)
+        self.stop_button = self.make_button(actions, "Stop", self.stop, variant="stop", tooltip="Request cancellation. Cleanup already performed and files already written are not rolled back.")
         self.stop_button.pack(side="left", padx=(0, 8))
         self.stop_button.configure(state="disabled")
-        self.open_button = self.make_button(actions, "Open output", self.open_output)
+        self.open_button = self.make_button(actions, "Open output", self.open_output, tooltip="Open the extraction destination in Explorer.")
         self.open_button.pack(side="left")
 
         progress_frame = ttk.Frame(outer)
-        progress_frame.pack(fill="x", pady=(0, 10))
+        progress_frame.pack(fill="x", pady=(0, 6))
         self.progress = ttk.Progressbar(progress_frame, variable=self.progress_var, maximum=100)
-        self.progress.pack(fill="x", ipady=5, pady=(0, 6))
+        self.progress.pack(fill="x", ipady=3, pady=(0, 4))
         ttk.Label(progress_frame, textvariable=self.status_var, style="Muted.TLabel").pack(anchor="w")
 
-        log_frame = ttk.LabelFrame(outer, text="Log")
-        log_frame.pack(fill="both", expand=True)
+        log_frame = ttk.LabelFrame(outer, text="Log", padding=(10, 6))
+        log_frame.pack(fill="x")
         self.log_text = tk.Text(
             log_frame,
-            height=8,
+            height=5,
             bg=GRAPHITE_FIELD,
             fg=GRAPHITE_TEXT,
             insertbackground=GRAPHITE_TEXT,
@@ -392,7 +523,11 @@ class GameDataExtractorApp(tk.Tk):
             font=("Consolas", 9),
             state="disabled",
         )
-        self.log_text.pack(fill="both", expand=True)
+        self.log_text.pack(side="left", fill="both", expand=True)
+        log_scrollbar = ttk.Scrollbar(log_frame, command=self.log_text.yview)
+        log_scrollbar.pack(side="right", fill="y")
+        self.log_text.configure(yscrollcommand=log_scrollbar.set)
+        add_tooltip(self.log_text, "Extraction progress, cleaned folders, DLC overrides, protected archives and conversion warnings appear here.")
 
     def detect_installations(self, schedule_estimate=True):
         installs = find_dayz_installations()
@@ -556,6 +691,7 @@ class GameDataExtractorApp(tk.Tk):
 
         plan = self.plan
         include_dayz_misc = self.include_dayz_misc_var.get()
+        clean_base_game_folders = self.clean_base_game_folders_var.get()
         self.save_current_settings()
         self.set_busy(True)
         self.progress_var.set(0)
@@ -571,6 +707,7 @@ class GameDataExtractorApp(tk.Tk):
                     workers=None,
                     cfgconvert_exe=cfgconvert_exe,
                     include_dayz_misc=include_dayz_misc,
+                    clean_base_game_folders=clean_base_game_folders,
                     cancel_event=self.cancel_event,
                     progress=self.events.put,
                 )
@@ -588,6 +725,8 @@ class GameDataExtractorApp(tk.Tk):
         self.install_combo.configure(state="disabled" if busy else "readonly")
         self.extract_button.configure(state="disabled" if busy or self.plan is None else "normal")
         self.stop_button.configure(state="normal" if busy else "disabled")
+        for checkbox in self.option_checkbuttons:
+            checkbox.configure(state="disabled" if busy else "normal")
 
         if busy:
             self.cancel_event.clear()
@@ -659,6 +798,10 @@ class GameDataExtractorApp(tk.Tk):
                 self.status_var.set("Failed")
                 self.extract_button.configure(state="disabled")
                 self.log("ERROR: " + event.get("message", "Unknown error"))
+            elif event_type == "cleanup":
+                self.progress_var.set(0)
+                self.status_var.set(event["message"])
+                self.log(event["message"])
             elif event_type == "archive":
                 self.status_var.set(event.get("message", "Extracting..."))
             elif event_type == "file":
@@ -767,6 +910,7 @@ class GameDataExtractorApp(tk.Tk):
             "cfgconvert_exe": self.cfgconvert_var.get().strip(),
             "include_dayz_misc": self.include_dayz_misc_var.get(),
             "create_dayz_script_folder": self.create_dayz_script_folder_var.get(),
+            "clean_base_game_folders": self.clean_base_game_folders_var.get(),
         })
 
     def on_close(self):

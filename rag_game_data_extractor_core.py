@@ -1,6 +1,7 @@
 import os
 import re
 import shutil
+import stat
 import tempfile
 import threading
 import time
@@ -30,6 +31,7 @@ from rag_inspector_extract import (
 DAYZ_APP_ID = "221100"
 DAYZ_EXPERIMENTAL_APP_ID = "1024020"
 MANIFEST_NAME = ".rag_game_data_extractor.json"
+DAYZ_BASE_GAME_FOLDERS = {"dz", "scripts", "core", "bin", "graphics", "gui", "languagecore", "system"}
 DAYZ_SCRIPT_MODULES = {
     "1_core",
     "2_gamelib",
@@ -614,6 +616,44 @@ def has_conversion_candidates(plan):
     )
 
 
+def _clean_base_game_folders(plan, output_root, include_dayz_misc, cancel_event, progress):
+    roots = {
+        re.split(r"[\\/]+", item.relative_path)[0].casefold()
+        for item in plan.entries
+    } & DAYZ_BASE_GAME_FOLDERS
+    if include_dayz_misc:
+        roots.add("dz")
+
+    targets = sorted(
+        (path for path in output_root.iterdir() if path.name.casefold() in roots),
+        key=lambda path: path.name.casefold(),
+    )
+    protected = [plan.game_root.resolve()] + [source.path.resolve() for source in plan.archives]
+
+    for target in targets:
+        attributes = getattr(target.lstat(), "st_file_attributes", 0)
+        resolved = target.resolve()
+        if target.is_symlink() or attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT or resolved.parent != output_root:
+            raise GameDataExtractorError(f"Refusing to clean linked base-game folder: {target}")
+        if not target.is_dir():
+            raise GameDataExtractorError(f"Base-game output path is not a folder: {target}")
+        if any(path == resolved or resolved in path.parents for path in protected):
+            raise GameDataExtractorError(f"Refusing to clean a folder containing DayZ source data: {target}")
+
+    cleaned = []
+    for target in targets:
+        if cancel_event.is_set():
+            raise ExtractionCancelled("Extraction cancelled.")
+        if progress:
+            progress({"type": "cleanup", "message": f"Removing existing base-game folder: {target.name}"})
+        if cancel_event.is_set():
+            raise ExtractionCancelled("Extraction cancelled.")
+        shutil.rmtree(target)
+        cleaned.append(target.name)
+
+    return cleaned
+
+
 def extract_game_data(
     plan,
     output_root,
@@ -622,11 +662,16 @@ def extract_game_data(
     include_dayz_misc=False,
     cancel_event=None,
     progress=None,
+    clean_base_game_folders=True,
 ):
     output_root = Path(output_root).resolve()
 
     if output_root == plan.game_root or plan.game_root in output_root.parents:
         raise GameDataExtractorError("Output folder cannot be inside DayZ installation.")
+
+    cancel_event = cancel_event or threading.Event()
+    if cancel_event.is_set():
+        raise ExtractionCancelled("Extraction cancelled.")
 
     output_root.mkdir(parents=True, exist_ok=True)
     try:
@@ -634,7 +679,6 @@ def extract_game_data(
     except OSError:
         pass
 
-    cancel_event = cancel_event or threading.Event()
     workers = get_recommended_workers() if workers is None else max(1, int(workers))
     entries_by_archive = {}
     dayz_misc_archive = None
@@ -652,6 +696,19 @@ def extract_game_data(
 
     for item in plan.entries:
         entries_by_archive.setdefault(item.archive.relative_path, []).append(item)
+
+    cleaned_folders = []
+    try:
+        for source in plan.archives:
+            source_stat = source.path.stat()
+            if source_stat.st_size != source.size or source_stat.st_mtime_ns != source.mtime_ns:
+                raise GameDataExtractorError(f"Source archive changed; rescan before extraction: {source.relative_path}")
+        if clean_base_game_folders:
+            cleaned_folders = _clean_base_game_folders(plan, output_root, include_dayz_misc, cancel_event, progress)
+    except Exception:
+        if dayz_misc_archive:
+            dayz_misc_archive.unlink(missing_ok=True)
+        raise
 
     counters = {"files": 0, "bytes": 0, "last_progress": 0.0}
     counter_lock = threading.Lock()
@@ -829,6 +886,7 @@ def extract_game_data(
         "conversion_errors": conversion_errors,
         "dayz_misc_files": misc_result["files"],
         "dayz_misc_bytes": misc_result["bytes"],
+        "cleaned_folders": cleaned_folders,
         "workers": workers,
         "output_root": str(output_root),
     }

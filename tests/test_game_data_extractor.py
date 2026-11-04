@@ -1,4 +1,7 @@
 from pathlib import Path
+import os
+import subprocess
+import threading
 import zipfile
 
 import pytest
@@ -212,3 +215,197 @@ def test_dayz_misc_sources_overlay_vanilla_paths(tmp_path):
     assert (power / "powerline_vhv.xml").read_bytes() == b"vhv"
     assert (output / "DZ" / "structures_bliss" / "industrial" / "Power" / "powerline_hv2.xml").read_bytes() == b"hv2"
     assert not (output / "DZ" / "structures_bliss" / "industrial" / "Power" / "powerline_hv3.xml").exists()
+
+
+def test_cleanup_removes_all_selected_base_game_folders_and_preserves_custom_roots(tmp_path):
+    roots = ("DZ", "scripts", "Core", "bin", "graphics", "gui", "languagecore", "system")
+    for index, root in enumerate(roots):
+        make_pbo(tmp_path, f"dta/base_{index}.pbo", root, {"current.txt": b"new"})
+    make_pbo(tmp_path, "Addons/custom.pbo", "MyMod", {"current.txt": b"custom"})
+    output = tmp_path / "output"
+    for root in roots:
+        old = output / root.swapcase() / "custom_subfolder" / "stale.txt"
+        old.parent.mkdir(parents=True)
+        old.write_bytes(b"old")
+    custom_roots = ("MyMod", "DZCustom", "script", "scripts_extra", "bin_backup", "@DZ", "Documents")
+    for root in custom_roots:
+        folder = output / root
+        folder.mkdir()
+        (folder / "keep.txt").write_bytes(b"keep")
+    (output / "root_file.txt").write_bytes(b"keep")
+    plan = build_extraction_plan(tmp_path / "game")
+
+    result = extract_game_data(plan, output)
+
+    assert {name.casefold() for name in result["cleaned_folders"]} == {name.casefold() for name in roots}
+    for root in roots:
+        assert not (output / root.swapcase() / "custom_subfolder").exists()
+        assert (output / root / "current.txt").read_bytes() == b"new"
+    for root in custom_roots:
+        assert (output / root / "keep.txt").read_bytes() == b"keep"
+    assert (output / "MyMod" / "current.txt").read_bytes() == b"custom"
+    assert (output / "root_file.txt").read_bytes() == b"keep"
+
+
+def test_cleanup_can_be_disabled(tmp_path):
+    make_pbo(tmp_path, "Addons/data.pbo", "DZ", {"current.txt": b"new"})
+    output = tmp_path / "output"
+    (output / "DZ").mkdir(parents=True)
+    (output / "DZ" / "stale.txt").write_bytes(b"keep")
+    plan = build_extraction_plan(tmp_path / "game")
+
+    result = extract_game_data(plan, output, clean_base_game_folders=False)
+
+    assert result["cleaned_folders"] == []
+    assert (output / "DZ" / "stale.txt").read_bytes() == b"keep"
+    assert (output / "DZ" / "current.txt").read_bytes() == b"new"
+
+
+def test_scripts_only_cleanup_leaves_other_base_game_data_untouched(tmp_path):
+    make_pbo(tmp_path, "dta/scripts.pbo", "scripts", {"4_World/current.c": b"new"})
+    make_pbo(tmp_path, "Addons/data.pbo", "DZ", {"current.txt": b"data"})
+    output = tmp_path / "output"
+    old_script = output / "scripts" / "4_World" / "DayZ" / "stale.c"
+    old_script.parent.mkdir(parents=True)
+    old_script.write_bytes(b"old")
+    (output / "DZ").mkdir()
+    (output / "DZ" / "keep.txt").write_bytes(b"keep")
+    plan = build_extraction_plan(tmp_path / "game", include_extensions=".c")
+
+    result = extract_game_data(plan, output)
+
+    assert result["cleaned_folders"] == ["scripts"]
+    assert not old_script.exists()
+    assert (output / "scripts" / "4_World" / "current.c").read_bytes() == b"new"
+    assert (output / "DZ" / "keep.txt").read_bytes() == b"keep"
+    assert not (output / "DZ" / "current.txt").exists()
+
+
+def test_dayz_misc_overlay_also_cleans_dz_with_scripts_only_profile(tmp_path, monkeypatch):
+    make_pbo(tmp_path, "dta/scripts.pbo", "scripts", {"4_World/current.c": b"new"})
+    archive_path = tmp_path / "dayz-misc.zip"
+    with zipfile.ZipFile(archive_path, "w") as archive:
+        archive.writestr("DayZ-Misc-master/Road Parts/Nasdara/asf1takistan_25.p3d", b"source")
+    monkeypatch.setattr(rag_game_data_extractor_core, "_download_dayz_misc", lambda *_: archive_path)
+    output = tmp_path / "output"
+    (output / "DZ").mkdir(parents=True)
+    (output / "DZ" / "stale.txt").write_bytes(b"old")
+    plan = build_extraction_plan(tmp_path / "game", include_extensions=".c")
+
+    result = extract_game_data(plan, output, include_dayz_misc=True)
+
+    assert result["cleaned_folders"] == ["DZ"]
+    assert not (output / "DZ" / "stale.txt").exists()
+    assert (output / "DZ" / "structures_takistan" / "Roads" / "Parts" / "asf1takistan_25.p3d").read_bytes() == b"source"
+    assert not archive_path.exists()
+
+
+def test_empty_filtered_plan_does_not_clean_base_game_folders(tmp_path):
+    make_pbo(tmp_path, "Addons/data.pbo", "DZ", {"current.txt": b"data"})
+    output = tmp_path / "output"
+    (output / "DZ").mkdir(parents=True)
+    (output / "DZ" / "keep.txt").write_bytes(b"keep")
+    plan = build_extraction_plan(tmp_path / "game", include_extensions=".c")
+
+    result = extract_game_data(plan, output)
+
+    assert result["cleaned_folders"] == []
+    assert (output / "DZ" / "keep.txt").read_bytes() == b"keep"
+
+
+@pytest.mark.parametrize("source_missing", [False, True])
+def test_unusable_source_archive_prevents_cleanup(tmp_path, source_missing):
+    archive = make_pbo(tmp_path, "Addons/data.pbo", "DZ", {"current.txt": b"data"})
+    plan = build_extraction_plan(tmp_path / "game")
+    output = tmp_path / "output"
+    (output / "DZ").mkdir(parents=True)
+    (output / "DZ" / "keep.txt").write_bytes(b"keep")
+    if source_missing:
+        archive.unlink()
+    else:
+        archive.write_bytes(b"changed")
+
+    with pytest.raises((rag_game_data_extractor_core.GameDataExtractorError, FileNotFoundError)):
+        extract_game_data(plan, output)
+
+    assert (output / "DZ" / "keep.txt").read_bytes() == b"keep"
+
+
+def test_cleanup_cannot_remove_source_installation_beneath_output(tmp_path):
+    source_root = tmp_path / "DZ"
+    make_pbo(source_root, "Addons/data.pbo", "DZ", {"current.txt": b"data"})
+    make_pbo(source_root, "dta/bin.pbo", "bin", {"current.txt": b"bin"})
+    plan = build_extraction_plan(source_root / "game")
+    (tmp_path / "bin").mkdir()
+    (tmp_path / "bin" / "keep.txt").write_bytes(b"keep")
+
+    with pytest.raises(rag_game_data_extractor_core.GameDataExtractorError, match="containing DayZ source data"):
+        extract_game_data(plan, tmp_path)
+
+    assert plan.archives[0].path.exists()
+    assert (tmp_path / "bin" / "keep.txt").read_bytes() == b"keep"
+
+
+def make_directory_link(link, target):
+    if os.name == "nt":
+        subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(target)], check=True, capture_output=True)
+    else:
+        link.symlink_to(target, target_is_directory=True)
+
+
+def test_linked_base_game_root_is_rejected_before_any_deletion(tmp_path):
+    make_pbo(tmp_path, "Addons/data.pbo", "DZ", {"current.txt": b"data"})
+    make_pbo(tmp_path, "dta/bin.pbo", "bin", {"current.txt": b"bin"})
+    output = tmp_path / "output"
+    (output / "bin").mkdir(parents=True)
+    (output / "bin" / "keep.txt").write_bytes(b"keep")
+    custom = tmp_path / "custom"
+    custom.mkdir()
+    (custom / "keep.txt").write_bytes(b"keep")
+    link = output / "DZ"
+    make_directory_link(link, custom)
+    plan = build_extraction_plan(tmp_path / "game")
+
+    with pytest.raises(rag_game_data_extractor_core.GameDataExtractorError, match="linked base-game folder"):
+        extract_game_data(plan, output)
+
+    assert (custom / "keep.txt").read_bytes() == b"keep"
+    assert (output / "bin" / "keep.txt").read_bytes() == b"keep"
+
+
+def test_cleanup_does_not_follow_nested_directory_links(tmp_path):
+    make_pbo(tmp_path, "Addons/data.pbo", "DZ", {"current.txt": b"new"})
+    output = tmp_path / "output"
+    (output / "DZ").mkdir(parents=True)
+    custom = tmp_path / "custom"
+    custom.mkdir()
+    (custom / "keep.txt").write_bytes(b"keep")
+    make_directory_link(output / "DZ" / "nested_link", custom)
+    plan = build_extraction_plan(tmp_path / "game")
+
+    result = extract_game_data(plan, output)
+
+    assert result["cleaned_folders"] == ["DZ"]
+    assert (custom / "keep.txt").read_bytes() == b"keep"
+    assert not (output / "DZ" / "nested_link").exists()
+
+
+@pytest.mark.parametrize("cancel_at_cleanup", [False, True])
+def test_cancellation_before_deletion_preserves_existing_data(tmp_path, cancel_at_cleanup):
+    make_pbo(tmp_path, "Addons/data.pbo", "DZ", {"current.txt": b"new"})
+    output = tmp_path / "output"
+    (output / "DZ").mkdir(parents=True)
+    (output / "DZ" / "keep.txt").write_bytes(b"keep")
+    cancel = threading.Event()
+    if not cancel_at_cleanup:
+        cancel.set()
+
+    def progress(event):
+        if event["type"] == "cleanup":
+            cancel.set()
+
+    plan = build_extraction_plan(tmp_path / "game")
+    with pytest.raises(rag_game_data_extractor_core.ExtractionCancelled):
+        extract_game_data(plan, output, cancel_event=cancel, progress=progress)
+
+    assert (output / "DZ" / "keep.txt").read_bytes() == b"keep"
