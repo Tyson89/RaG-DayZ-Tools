@@ -1470,7 +1470,7 @@ class RaGPboBuilderApp(tk.Tk):
         binarize_addon_entry = tk.Text(frame, height=3, bg=GRAPHITE_FIELD, fg=GRAPHITE_TEXT, insertbackground=GRAPHITE_TEXT, selectbackground=GRAPHITE_ACCENT_DARK, selectforeground="#ffffff", relief="flat", borderwidth=0, highlightthickness=1, highlightbackground=GRAPHITE_BORDER, highlightcolor=GRAPHITE_ACCENT, font=("Segoe UI", 10))
         binarize_addon_entry.grid(row=7, column=1, columnspan=2, sticky="nsew", pady=5, padx=(8, 0))
         binarize_addon_entry.insert("1.0", self.binarize_addon_folders_var.get())
-        ttk.Label(frame, text="Extra folders Binarize should scan for terrain object configs. Use one path per line.", foreground=GRAPHITE_MUTED, wraplength=520).grid(row=8, column=1, columnspan=2, sticky="w", padx=(8, 0), pady=(0, 6))
+        ttk.Label(frame, text="Config scan folders, one path per line. Blank uses DZ under Project root, or Project root if DZ is absent. Listed folders replace this default; include DayZ data and required dependencies.", foreground=GRAPHITE_MUTED, wraplength=520).grid(row=8, column=1, columnspan=2, sticky="w", padx=(8, 0), pady=(0, 6))
         ttk.Label(frame, text="Exclude file extensions").grid(row=9, column=0, sticky="nw", pady=5)
         exclude_extensions_entry = tk.Text(frame, height=3, bg=GRAPHITE_FIELD, fg=GRAPHITE_TEXT, insertbackground=GRAPHITE_TEXT, selectbackground=GRAPHITE_ACCENT_DARK, selectforeground="#ffffff", relief="flat", borderwidth=0, highlightthickness=1, highlightbackground=GRAPHITE_BORDER, highlightcolor=GRAPHITE_ACCENT, font=("Segoe UI", 10))
         exclude_extensions_entry.grid(row=9, column=1, columnspan=2, sticky="nsew", pady=5, padx=(8, 0))

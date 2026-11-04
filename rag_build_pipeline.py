@@ -252,6 +252,7 @@ def get_available_logical_threads():
 
 
 def get_build_failure_diagnostics(error_message, log_lines=None):
+    failure = str(error_message or "").lower()
     text = "\n".join([str(error_message or "")] + [str(line) for line in (log_lines or [])])
     lower = text.lower()
     diagnostics = []
@@ -283,11 +284,13 @@ def get_build_failure_diagnostics(error_message, log_lines=None):
             "Make the PBO prefix and config worldName resolve to the same in-PBO WRP path. Common modular map layouts may need a $PBOPREFIX$ file or a project-relative worldName.",
         )
 
-    if "0xc0000005" in lower or "access violation" in lower:
+    binarize_exit = re.search(r"\bbinarize failed with exit code\s+(-?(?:0x[0-9a-f]+|\d+))", failure)
+    binarize_access_violation = binarize_exit is not None and (int(binarize_exit.group(1), 0) & 0xFFFFFFFF) == 0xC0000005
+    if binarize_access_violation or ("binarize" in failure and ("0xc0000005" in lower or "access violation" in lower)):
         add(
             "Binarize crashed with an access violation",
-            "DayZ Tools Binarize crashed internally. A common cause is feeding it already-binarized ODOL P3Ds or malformed source data.",
-            "Run preflight with P3D internal checks enabled. Keep ODOL P3Ds out of Binarize input or rebuild from proper source models when possible.",
+            "DayZ Tools Binarize terminated with Windows status 0xC0000005. The exit code alone does not identify the offending config or model.",
+            "Limit Options > Binarize addon folders to DayZ data and required dependencies, then run preflight with P3D internal checks enabled. Test suspect configs and source models separately.",
         )
 
     if "charmap" in lower and "codec" in lower:
@@ -304,7 +307,11 @@ def get_build_failure_diagnostics(error_message, log_lines=None):
             "Open the file path shown above the CfgConvert output and fix the reported line. Also check active #include files because errors can come from included .hpp fragments.",
         )
 
-    if "dssignfile failed" in lower or "private key" in lower or "bisign" in lower:
+    if any(message in failure for message in (
+        "dssignfile failed", "dssignfile finished but no .bisign", "dssignfile.exe not found",
+        "private key not found", "selected private key does not end", "signed build expected a .bisign",
+        "could not remove old signature", "missing backup signature", "signature is missing for",
+    )):
         add(
             "Signing failed",
             "The signing step could not create the expected .bisign file or the selected private key is invalid/missing.",
@@ -956,27 +963,34 @@ def parse_binarize_addon_folders(raw_value):
 
 
 def get_binarize_addon_folders(settings, log=None):
-    project_root = normalize_project_root_arg(settings.get("project_root", ""))
+    project_root = normalize_working_dir(settings.get("project_root", ""))
     folders = []
     seen = set()
 
     def add_folder(folder):
         if not folder:
             return
-        normalized = os.path.normpath(folder)
+        normalized = os.path.normpath(normalize_working_dir(folder))
         key = os.path.normcase(os.path.abspath(normalized))
         if key in seen:
             return
         seen.add(key)
         folders.append(normalized)
 
-    add_folder(project_root)
-
-    for folder in parse_binarize_addon_folders(settings.get("binarize_addon_folders", "")):
-        if os.path.isdir(folder):
+    configured = parse_binarize_addon_folders(settings.get("binarize_addon_folders", ""))
+    if configured:
+        for folder in configured:
+            if not os.path.isdir(normalize_working_dir(folder)):
+                raise BuildError(f"Binarize addon folder does not exist: {folder}")
             add_folder(folder)
-        elif log:
-            log(f"WARNING: Ignoring missing Binarize addon folder: {folder}")
+    else:
+        dayz_data = os.path.join(project_root, "DZ") if project_root else ""
+        if dayz_data and os.path.isdir(dayz_data):
+            add_folder(dayz_data)
+        else:
+            add_folder(project_root)
+            if log and project_root:
+                log("No DZ folder found under Project root; Binarize will scan Project root. Set Binarize addon folders to limit the scan.")
 
     return folders
 
@@ -1595,6 +1609,7 @@ def compute_addon_state_hash(source_dir, prefix, settings, extra_patterns=None, 
         "sign_pbos": bool(settings["sign_pbos"]),
         "fs_shadowing": bool(settings.get("fs_shadowing", False)),
         "project_root": settings["project_root"],
+        "binarize_addon_folders": get_binarize_addon_folders(settings) if settings["use_binarize"] else [],
         "exclude_file_extensions": get_exclusion_setting_values(settings)[0],
         "exclude_folder_names": get_exclusion_setting_values(settings)[1],
         "max_processes": settings["max_processes"],
