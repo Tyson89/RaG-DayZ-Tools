@@ -107,6 +107,7 @@ class GameDataExtractorApp(tk.Tk):
         self.profile_var = tk.StringVar(value=saved_profile if saved_profile in PROFILES else "Everything")
         self.cfgconvert_var = tk.StringVar(value=self.settings.get("cfgconvert_exe", detected_cfgconvert))
         self.include_dayz_misc_var = tk.BooleanVar(value=self.settings.get("include_dayz_misc", False))
+        self.create_dayz_script_folder_var = tk.BooleanVar(value=self.settings.get("create_dayz_script_folder", False))
         self.summary_var = tk.StringVar(value="Calculating estimated output...")
         self.status_var = tk.StringVar(value="Detecting game data...")
         self.progress_var = tk.DoubleVar(value=0)
@@ -330,9 +331,15 @@ class GameDataExtractorApp(tk.Tk):
             text="GitHub",
             command=lambda: webbrowser.open(DAYZ_MISC_REPO_URL),
         ).grid(row=1, column=2, sticky="e", pady=4)
-        ttk.Label(options, text="CfgConvert.exe", style="Card.TLabel").grid(row=2, column=0, sticky="w", pady=4)
+        ttk.Checkbutton(
+            options,
+            text="Create DayZ subfolder in script modules",
+            variable=self.create_dayz_script_folder_var,
+            command=self.request_estimate,
+        ).grid(row=2, column=0, columnspan=3, sticky="w", pady=4)
+        ttk.Label(options, text="CfgConvert.exe", style="Card.TLabel").grid(row=3, column=0, sticky="w", pady=4)
         cfg_frame = ttk.Frame(options)
-        cfg_frame.grid(row=2, column=1, columnspan=2, sticky="ew", padx=8, pady=4)
+        cfg_frame.grid(row=3, column=1, columnspan=2, sticky="ew", padx=8, pady=4)
         cfg_frame.columnconfigure(0, weight=1)
         ttk.Entry(cfg_frame, textvariable=self.cfgconvert_var).grid(row=0, column=0, sticky="ew")
         ttk.Button(cfg_frame, text="Browse", command=self.choose_cfgconvert).grid(row=0, column=1, padx=(8, 0))
@@ -464,7 +471,7 @@ class GameDataExtractorApp(tk.Tk):
 
     def current_plan_signature(self):
         game_path = os.path.normcase(os.path.abspath(self.game_path_var.get().strip()))
-        return game_path, self.profile_var.get()
+        return game_path, self.profile_var.get(), self.create_dayz_script_folder_var.get()
 
     def request_estimate(self):
         if self.busy:
@@ -488,6 +495,7 @@ class GameDataExtractorApp(tk.Tk):
         self.estimate_generation += 1
         generation = self.estimate_generation
         include_extensions = get_profile_extensions(self.profile_var.get())
+        create_dayz_script_folder = self.create_dayz_script_folder_var.get()
         self.plan = None
         self.plan_signature = None
         self.extract_button.configure(state="disabled")
@@ -505,6 +513,7 @@ class GameDataExtractorApp(tk.Tk):
                     game_path,
                     include_extensions=include_extensions,
                     progress=report,
+                    create_dayz_script_folder=create_dayz_script_folder,
                 )
                 self.events.put({
                     "type": "estimate_done",
@@ -757,6 +766,7 @@ class GameDataExtractorApp(tk.Tk):
             "profile": self.profile_var.get(),
             "cfgconvert_exe": self.cfgconvert_var.get().strip(),
             "include_dayz_misc": self.include_dayz_misc_var.get(),
+            "create_dayz_script_folder": self.create_dayz_script_folder_var.get(),
         })
 
     def on_close(self):

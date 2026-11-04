@@ -39,8 +39,8 @@ DAYZ_SCRIPT_MODULES = {
 }
 DAYZ_MISC_REPO_URL = "https://github.com/BohemiaInteractive/DayZ-Misc"
 DAYZ_MISC_DOWNLOAD_URL = "https://codeload.github.com/BohemiaInteractive/DayZ-Misc/zip/refs/heads/master"
-DAYZ_MISC_ESTIMATED_BYTES = 68_463_918
-DAYZ_MISC_ESTIMATED_FILES = 291
+DAYZ_MISC_ESTIMATED_BYTES = 69_336_731
+DAYZ_MISC_ESTIMATED_FILES = 416
 DAYZ_MISC_MAX_DOWNLOAD_BYTES = 128 * 1024 * 1024
 DAYZ_MISC_MAX_UNPACKED_BYTES = 256 * 1024 * 1024
 DAYZ_MISC_MAX_FILES = 5_000
@@ -48,6 +48,7 @@ DAYZ_MISC_FOLDER_TARGETS = {
     ("Road Parts", "Chernarus"): ("DZ", "structures", "roads", "parts"),
     ("Road Parts", "Livonia"): ("DZ", "structures_bliss", "roads", "parts"),
     ("Road Parts", "Sakhal"): ("DZ", "structures_sakhal", "roads", "parts"),
+    ("Road Parts", "Nasdara"): ("DZ", "structures_takistan", "Roads", "Parts"),
     ("Water", "Chernarus"): ("DZ", "water", "Ponds"),
     ("Water", "Sakhal"): ("DZ", "water_sakhal", "Ice_Lake"),
 }
@@ -308,13 +309,14 @@ def discover_game_archives(game_root):
     return pbo_paths, list(protected.values())
 
 
-def _normalize_relative_path(prefix, entry_name):
+def _normalize_relative_path(prefix, entry_name, create_dayz_script_folder=False):
     normalized_prefix = prefix.strip("\\/") if prefix else ""
     normalized_entry = entry_name.strip("\\/") if entry_name else ""
     entry_parts = [part for part in re.split(r"[\\/]+", normalized_entry) if part]
 
     if (
-        normalized_prefix.casefold() == "scripts"
+        create_dayz_script_folder
+        and normalized_prefix.casefold() == "scripts"
         and entry_parts
         and entry_parts[0].casefold() in DAYZ_SCRIPT_MODULES
         and (len(entry_parts) < 2 or entry_parts[1].casefold() != "dayz")
@@ -344,7 +346,7 @@ def _normalize_relative_path(prefix, entry_name):
     return "\\".join(parts)
 
 
-def build_extraction_plan(game_root, include_extensions="", exclude_extensions="", progress=None):
+def build_extraction_plan(game_root, include_extensions="", exclude_extensions="", progress=None, create_dayz_script_folder=False):
     root = Path(game_root).resolve()
     include = parse_extension_list(include_extensions)
     exclude = parse_extension_list(exclude_extensions)
@@ -419,7 +421,7 @@ def build_extraction_plan(game_root, include_extensions="", exclude_extensions="
                 plan.unsupported_entries.append(f"{source.relative_path}: {entry.name}")
                 continue
 
-            relative_path = _normalize_relative_path(source.prefix, entry.name)
+            relative_path = _normalize_relative_path(source.prefix, entry.name, create_dayz_script_folder)
             key = relative_path.casefold()
             item = PlannedEntry(source, entry, relative_path)
             previous = claims.get(key)
@@ -526,6 +528,9 @@ def _dayz_misc_target(relative_parts):
 
     if relative_parts == ("README.md",):
         return ("DayZ-Misc-README.md",)
+
+    if len(relative_parts) == 2 and relative_parts[0] == "Powerlines" and relative_parts[1] in {"powerline_hv3.xml", "powerline_vhv.xml"}:
+        return ("DZ", "structures_takistan", "Industrial", "Power", relative_parts[1])
 
     if len(relative_parts) >= 3:
         target = DAYZ_MISC_FOLDER_TARGETS.get(relative_parts[:2])
