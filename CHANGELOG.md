@@ -4,7 +4,7 @@
 
 ### PBO Builder
 
-- Added a Local Server window with the RaG icon and a blue toolbar button. DayZ Diag is the default, with a custom launcher option. Builder can start, join, and stop the server. Optional post-build launch loads the new mod on both server and client.
+- Added a Local Server window with a blue toolbar button. DayZ Diag is the default, with a custom launcher option. Builder can start, join, and stop the server. Optional post-build launch loads the new mod on both server and client.
 - Local Server detects DayZ installations and supports custom missions. Official Chernarus, Livonia, Sakhal, and Nasdara missions are available from Bohemia Interactive. Each setup has its own mission copy, profiles, and server config, accessible from the Local Server window.
 - The Workshop mod list detects mods in `!Workshop` and includes search, a selected-only filter, Select All, and Clear Selection. Local mods have their own tab.
 - COT and VPP Admin Tools appear in the mod list when detected. Builder can grant admin access by SteamID64 and load Community Framework automatically when installed. The local VPP admin password prompt is disabled.
