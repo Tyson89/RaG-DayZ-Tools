@@ -4,36 +4,38 @@
 
 ### PBO Builder
 
-- Built-in DayZ Diag is the default launcher. Start a server, join it, stop the session, or open its files from Builder. Optional post-build launch loads the completed build output on the server and client. Custom launchers remain available in Options.
-- Added a blue Local Server button and a tabbed window with the RaG icon. Detect DayZ installations, browse to a custom mission, or download official Chernarus, Livonia, Sakhal, and Nasdara missions from Bohemia Interactive's Central Economy repository. Each setup uses its own mission copy, profiles, and server configuration.
-- Discover mods in DayZ's `!Workshop` folder. Search, filter to selected mods, select all, or clear the selection. Add and remove local mod folders separately.
-- Show detected COT and VPP Admin Tools in the mod list. Set up admin access with a SteamID64 and load Community Framework automatically when available. Set `vppDisablePassword` to `1` for the local server.
-- Verify PBO payload checksums and cached signatures, rebuild invalid cached output, and detect source changes during packing. Preserve previous output if publishing fails and let active build cancellation finish before Builder closes.
+- Added a Local Server window with the RaG icon and a blue toolbar button. DayZ Diag is the default, with a custom launcher option. Builder can start, join, and stop the server. Optional post-build launch loads the new mod on both server and client.
+- Local Server detects DayZ installations and supports custom missions. Official Chernarus, Livonia, Sakhal, and Nasdara missions are available from Bohemia Interactive. Each setup has its own mission copy, profiles, and server config, accessible from the Local Server window.
+- The Workshop mod list detects mods in `!Workshop` and includes search, a selected-only filter, Select All, and Clear Selection. Local mods have their own tab.
+- COT and VPP Admin Tools appear in the mod list when detected. Builder can grant admin access by SteamID64 and load Community Framework automatically when installed. The local VPP admin password prompt is disabled.
+- Damaged cached builds are rebuilt after PBO and signature checks. Builder detects source changes during packing, preserves previous output if publishing fails, and waits for build cancellation before closing.
 
 ### Game Data Extractor
 
-- Fixed Scripts only cleanup so it preserves existing `DZ` data, including when DayZ-Misc assets are enabled. Added Configs only, Textures only, Models only, and Materials only profiles and selection by archive or folder.
-- Added an update-only mode that skips verified unchanged files and regenerates missing or edited output. Added manual rescan and automatic rescans when source archives change.
-- Preview the exact folders, file counts, and sizes affected by cleanup. Check free disk space before staging, preserve previous output on failure or cancellation, and retain backups if rollback cannot complete.
-- Show throughput, elapsed time, and estimated time remaining. Export the full log, including conversion failures.
+- Fixed a Scripts only cleanup bug that could remove existing `DZ` data when DayZ-Misc assets were enabled.
+- Added Configs only, Textures only, Models only, and Materials only profiles. Extraction can also be limited to selected archives or folders.
+- Update-only mode skips verified unchanged files and regenerates missing or edited output. Rescans can run manually or automatically when source archives change.
+- The cleanup preview lists affected folders, file counts, and sizes. Extraction checks free space first and rolls back on failure or cancellation. Backups are retained if rollback fails.
+- The progress display now shows transfer speed, elapsed time, and estimated time remaining. Exported logs include conversion failures.
 
 ### PBO Inspector
 
-- Fixed the `config.bin` preview error and kept `texheaders.bin` out of config conversion. Open PAA, PAC, PNG, TGA, and JPEG textures in TexView. Inspector detects TexView or lets you browse to it.
-- Added editor-style line numbers and bundled JetBrains Mono for text file previews and diffs.
-- Run extraction and CfgConvert in the background with cancellation and rollback. Fall back to the Browse button if drag and drop fails to initialize.
+- Fixed the `config.bin` preview error. Inspector skips `texheaders.bin` during config conversion.
+- PAA, PAC, PNG, TGA, and JPEG textures can open in TexView. Inspector detects the executable and supports manual selection.
+- Text previews and diffs now have line numbers and use bundled JetBrains Mono.
+- Extraction and CfgConvert run in the background, with cancellation and rollback. The Browse button works if drag and drop fails to initialize.
 
 ### Mod Relocator
 
-- Added cancellation for scans, copies, and relocation, plus a Restore Backup action that backs up current files first. Skip linked paths and roll back interrupted changes.
+- Scans, copies, and relocations can be cancelled. Restore Backup saves a copy of the current files before restoring older versions. Relocator skips linked paths and rolls back interrupted changes.
 
 ### Workshop Publisher
 
-- Compare file hashes during preflight and staging to catch changed content before upload. Save failure transcripts when logging is configured.
+- Publisher checks file hashes before upload to catch changes made after preflight. Failed publishes save a transcript when logging is enabled.
 
 ### Tools Updater
 
-- Cancel or retry downloads. Reject checksums for unrelated files and conflicting checksums. Verify the download before replacing an existing installer.
+- Downloads can be cancelled or retried. Updater rejects unrelated or conflicting checksums and verifies each download before replacing an existing installer.
 
 ## 1.0.7
 
