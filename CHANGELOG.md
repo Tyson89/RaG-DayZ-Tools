@@ -2,13 +2,38 @@
 
 ## 1.0.8
 
-- PBO Builder adds a built-in DayZ Diag launcher with optional post-build startup and automatic loading of the build output. Download official stock missions, add local mods, or select all detected Workshop mods. Configure COT or VPP Admin Tools with a SteamID64. VPP's admin password prompt is disabled on the local server.
-- PBO Builder verifies PBO checksums and signatures before reusing cached builds, detects source changes during packing, and preserves previous output on failure.
-- Game Data Extractor preserves existing `DZ` data during Scripts only cleanup. It adds selective extraction, incremental updates, cleanup previews, disk-space checks, progress estimates, and log export. Failed or cancelled extractions roll back changes.
-- PBO Inspector fixes `config.bin` previews and opens PAA, PNG, TGA, and other textures in TexView. Text previews and diffs use line numbers and JetBrains Mono. Extraction supports cancellation with rollback.
-- Mod Relocator adds cancellation and backup restore, guards against linked paths, and rolls back interrupted changes.
-- Workshop Publisher rechecks file hashes before upload and saves logs for failed publishes.
-- Tools Updater adds cancellable downloads and stricter installer checksum checks. Failed or cancelled downloads preserve previously verified installers.
+### PBO Builder
+
+- Built-in DayZ Diag is the default launcher. Start a server, join it, stop the session, or open its files from Builder. Optional post-build launch loads the completed build output on the server and client. Custom launchers remain available in Options.
+- Added a blue Local Server button and a tabbed window with the RaG icon. Detect DayZ installations, browse to a custom mission, or download official Chernarus, Livonia, Sakhal, and Nasdara missions from Bohemia Interactive's Central Economy repository. Each setup uses its own mission copy, profiles, and server configuration.
+- Discover mods in DayZ's `!Workshop` folder. Search, filter to selected mods, select all, or clear the selection. Add and remove local mod folders separately.
+- Show detected COT and VPP Admin Tools in the mod list. Set up admin access with a SteamID64 and load Community Framework automatically when available. Set `vppDisablePassword` to `1` for the local server.
+- Verify PBO payload checksums and cached signatures, rebuild invalid cached output, and detect source changes during packing. Preserve previous output if publishing fails and let active build cancellation finish before Builder closes.
+
+### Game Data Extractor
+
+- Fixed Scripts only cleanup so it preserves existing `DZ` data, including when DayZ-Misc assets are enabled. Added Configs only, Textures only, Models only, and Materials only profiles and selection by archive or folder.
+- Added an update-only mode that skips verified unchanged files and regenerates missing or edited output. Added manual rescan and automatic rescans when source archives change.
+- Preview the exact folders, file counts, and sizes affected by cleanup. Check free disk space before staging, preserve previous output on failure or cancellation, and retain backups if rollback cannot complete.
+- Show throughput, elapsed time, and estimated time remaining. Export the full log, including conversion failures.
+
+### PBO Inspector
+
+- Fixed the `config.bin` preview error and kept `texheaders.bin` out of config conversion. Open PAA, PAC, PNG, TGA, and JPEG textures in TexView. Inspector detects TexView or lets you browse to it.
+- Added editor-style line numbers and bundled JetBrains Mono for text file previews and diffs.
+- Run extraction and CfgConvert in the background with cancellation and rollback. Fall back to the Browse button if drag and drop fails to initialize.
+
+### Mod Relocator
+
+- Added cancellation for scans, copies, and relocation, plus a Restore Backup action that backs up current files first. Skip linked paths and roll back interrupted changes.
+
+### Workshop Publisher
+
+- Compare file hashes during preflight and staging to catch changed content before upload. Save failure transcripts when logging is configured.
+
+### Tools Updater
+
+- Cancel or retry downloads. Reject checksums for unrelated files and conflicting checksums. Verify the download before replacing an existing installer.
 
 ## 1.0.7
 
