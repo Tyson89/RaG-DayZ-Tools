@@ -1327,8 +1327,8 @@ def replace_output_artifacts(temp_pbo, final_pbo, sign_pbos, log):
             prepared.append((prepared_signature, final_signature))
             log(f"Prepared signature for publish: {prepared_signature}")
         log("Publishing output artifacts after successful build validation.")
-        publish_started = True
         os.replace(temp_pbo, final_pbo)
+        publish_started = True
         log(f"Output PBO updated: {final_pbo}")
         new_names = {os.path.basename(final_signature) for _, final_signature in prepared}
         for prepared_signature, final_signature in prepared:
@@ -1338,6 +1338,7 @@ def replace_output_artifacts(temp_pbo, final_pbo, sign_pbos, log):
             if os.path.basename(old_signature) not in new_names:
                 os.remove(old_signature)
                 log(f"Removed stale signature: {old_signature}")
+        verify_published_output(final_pbo, sign_pbos, log)
         shutil.rmtree(backup_dir, ignore_errors=True)
         safe_remove_empty_parent(backup_root, final_dir)
         log("Output publish set completed successfully.")
@@ -2375,7 +2376,21 @@ def build_all(settings, log, progress_callback, cancel_callback=None):
         output_pbo = os.path.join(output_addons_dir, pbo_base_name + ".pbo")
         prefix = get_effective_pbo_prefix(pbo_base_name, folder_path, project_root, exclusion_rules, log)
         state_hash = compute_addon_state_hash(folder_path, prefix, settings, exclusion_rules, build_hash_cache)
-        can_skip = (not force_rebuild and source_cache.get(folder_name, {}).get("hash") == state_hash and os.path.isfile(output_pbo) and (not sign_pbos or find_new_signature_for_pbo(output_pbo)))
+        cached = source_cache.get(folder_name, {})
+        can_skip = not force_rebuild and cached.get("hash") == state_hash
+        if can_skip:
+            try:
+                properties = {"fsShadowing": "1"} if settings.get("fs_shadowing", False) else {}
+                output_hash = verify_packed_pbo(output_pbo, prefix, log, properties)
+                verify_published_output(output_pbo, sign_pbos, log)
+                if sign_pbos:
+                    signatures = glob.glob(get_signature_pattern_for_pbo(output_pbo))
+                    can_skip = cached.get("signatures") == {os.path.basename(path): file_sha1(path) for path in signatures}
+                if can_skip:
+                    can_skip = cached.get("output_hash") == output_hash
+            except Exception as error:
+                log(f"WARNING: Cached output failed verification. Rebuilding {folder_name}: {error}")
+                can_skip = False
         if can_skip:
             log(f"Skipping {folder_name} - no changes detected.")
             summary["skipped"] += 1
@@ -2459,7 +2474,7 @@ def build_all(settings, log, progress_callback, cancel_callback=None):
             pbo_properties = {"fsShadowing": "1"} if settings.get("fs_shadowing", False) else {}
             pack_pbo(job["pack_source"], job["temp_output_pbo"], job["prefix"], log, exclusion_rules, pbo_properties)
             check_cancelled()
-            verify_packed_pbo(job["temp_output_pbo"], job["prefix"], log, pbo_properties)
+            output_hash = verify_packed_pbo(job["temp_output_pbo"], job["prefix"], log, pbo_properties)
             verify_packed_wrp_entries(job["temp_output_pbo"], job["pack_source"], job["folder_path"], job["prefix"], project_root, exclusion_rules, log)
             check_cancelled()
             if sign_pbos:
@@ -2469,13 +2484,16 @@ def build_all(settings, log, progress_callback, cancel_callback=None):
                 check_cancelled()
             check_cancelled()
             replace_output_artifacts(job["temp_output_pbo"], job["output_pbo"], sign_pbos, log)
-            verify_published_output(job["output_pbo"], sign_pbos, log)
             cleanup_output_work_dir(job["output_work_dir"], log)
             summary["built"] += 1
             if sign_pbos:
                 if copy_bikey_to_keys(private_key, output_keys_dir, log):
                     summary["keys_copied"] += 1
             source_cache[job["folder_name"]] = {"hash": job["state_hash"], "pbo": job["output_pbo"], "updated": datetime.now().isoformat(timespec="seconds")}
+            source_cache[job["folder_name"]]["output_hash"] = output_hash
+            if sign_pbos:
+                signatures = glob.glob(get_signature_pattern_for_pbo(job["output_pbo"]))
+                source_cache[job["folder_name"]]["signatures"] = {os.path.basename(path): file_sha1(path) for path in signatures}
             save_build_cache(cache)
         except BuildCancelled:
             for pending_job in jobs[build_index - 1:]:

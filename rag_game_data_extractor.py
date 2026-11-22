@@ -10,6 +10,7 @@ import queue
 import subprocess
 import sys
 import threading
+import time
 import tkinter as tk
 import webbrowser
 from pathlib import Path
@@ -26,8 +27,11 @@ from rag_game_data_extractor_core import (
     find_cfgconvert,
     find_dayz_installations,
     get_free_space,
+    get_cleanup_preview,
+    get_required_space,
     get_recommended_workers,
     has_conversion_candidates,
+    is_plan_current,
 )
 from rag_inspector_settings import resource_path
 from rag_licence import make_licence_button
@@ -49,7 +53,15 @@ GRAPHITE_ACCENT = "#a74747"
 GRAPHITE_ACCENT_DARK = "#7f3434"
 GRAPHITE_SUCCESS = "#7fb087"
 GRAPHITE_SUCCESS_DARK = "#41684a"
-PROFILES = ("Everything", "Scripts only")
+PROFILE_EXTENSIONS = {
+    "Everything": "",
+    "Scripts only": ".c",
+    "Configs only": ".bin .cpp .hpp .cfg .xml .json",
+    "Textures only": ".paa .pac .tga .png .edds",
+    "Models only": ".p3d .rtm",
+    "Materials only": ".rvmat",
+}
+PROFILES = tuple(PROFILE_EXTENSIONS)
 
 
 class ToolTip:
@@ -133,7 +145,15 @@ def get_default_output_path():
 
 
 def get_profile_extensions(profile):
-    return ".c" if profile == "Scripts only" else ""
+    return PROFILE_EXTENSIONS.get(profile, "")
+
+
+def format_duration(seconds):
+    if seconds is None:
+        return "—"
+    minutes, seconds = divmod(max(0, int(seconds)), 60)
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours:d}:{minutes:02d}:{seconds:02d}" if hours else f"{minutes:d}:{seconds:02d}"
 
 
 class GameDataExtractorApp(tk.Tk):
@@ -148,6 +168,18 @@ class GameDataExtractorApp(tk.Tk):
         self.estimate_generation = 0
         self.installations = {}
         self.option_checkbuttons = []
+        self.input_controls = []
+        self.closing = False
+        self.started_at = None
+        self.last_rate = None
+        self.last_eta = None
+        self.conversion_errors = []
+        self.selected_archives = self.settings.get("selected_archives")
+        self.selected_folders = self.settings.get("selected_folders")
+        if not isinstance(self.selected_archives, list):
+            self.selected_archives = None
+        if not isinstance(self.selected_folders, list):
+            self.selected_folders = None
         detected_cfgconvert = find_cfgconvert()
         saved_output = self.settings.get("output_path", "")
         legacy_output = str(Path.home() / "DayZ Extracted")
@@ -164,7 +196,9 @@ class GameDataExtractorApp(tk.Tk):
         self.include_dayz_misc_var = tk.BooleanVar(value=self.settings.get("include_dayz_misc", False))
         self.create_dayz_script_folder_var = tk.BooleanVar(value=self.settings.get("create_dayz_script_folder", False))
         self.clean_base_game_folders_var = tk.BooleanVar(value=self.settings.get("clean_base_game_folders", True))
+        self.incremental_var = tk.BooleanVar(value=self.settings.get("incremental", False))
         self.summary_var = tk.StringVar(value="Calculating estimated output...")
+        self.metrics_var = tk.StringVar()
         self.status_var = tk.StringVar(value="Detecting game data...")
         self.progress_var = tk.DoubleVar(value=0)
 
@@ -188,7 +222,7 @@ class GameDataExtractorApp(tk.Tk):
         screen_width = self.winfo_screenwidth()
         screen_height = self.winfo_screenheight()
         width = min(1100, max(900, screen_width - 120))
-        height = min(700, max(680, screen_height - 140))
+        height = min(800, max(680, screen_height - 100))
         left = max(0, (screen_width - width) // 2)
         top = max(0, (screen_height - height) // 2)
         self.geometry(f"{width}x{height}+{left}+{top}")
@@ -429,6 +463,7 @@ class GameDataExtractorApp(tk.Tk):
         ttk.Label(paths, text="Extract to", style="Card.TLabel").grid(row=2, column=0, sticky="w", pady=2)
         output_entry = ttk.Entry(paths, textvariable=self.output_path_var)
         output_entry.grid(row=2, column=1, sticky="ew", padx=8, pady=2)
+        output_entry.bind("<FocusOut>", lambda event: self.render_estimate(self.plan) if self.plan and not self.busy else None)
         add_tooltip(output_entry, "Destination work drive or folder, usually P:\\. Data is placed into its virtual paths, such as DZ and scripts. Existing matching files are overwritten. Cleanup can also remove existing official folders and all their contents.")
         output_browse = ttk.Button(paths, text="Browse", command=self.choose_output_path, style="Path.TButton")
         output_browse.grid(row=2, column=2, pady=2)
@@ -457,7 +492,7 @@ class GameDataExtractorApp(tk.Tk):
         )
         profile_combo.pack(side="left")
         profile_combo.bind("<<ComboboxSelected>>", self.on_profile_selected)
-        add_tooltip(profile_combo, "Everything extracts all supported archive files. Scripts only extracts .c files and only cleans scripts. Enabling DayZ-Misc also installs source assets under DZ, including with Scripts only.")
+        add_tooltip(profile_combo, "Choose everything, scripts, configs, textures, models or materials. Filtered profiles preserve unrelated files. Scripts only can replace the scripts root when no archive/folder restriction is active. DayZ-Misc overlays source assets under DZ independently of the profile.")
         self._add_checkbutton(options, "DayZ-Misc sources", self.include_dayz_misc_var, 1, 0, "Download official Bohemia Interactive source assets from DayZ-Misc and overlay them after extraction. Includes road parts for Chernarus, Livonia, Sakhal and Nasdara, powerlines, water objects, body parts, proxies and animations. Assets use ADPL-SA; the upstream README is included.", self.on_dayz_misc_changed)
         self._add_checkbutton(options, "DayZ script folders", self.create_dayz_script_folder_var, 1, 1, "Create a DayZ subfolder inside each official script module, such as scripts\\4_World\\DayZ. Disabled by default to preserve the archive layout. Existing DayZ nesting is not duplicated.", self.request_estimate)
         github_button = ttk.Button(
@@ -467,13 +502,20 @@ class GameDataExtractorApp(tk.Tk):
         )
         github_button.grid(row=0, column=2, sticky="e", pady=(0, 6))
         add_tooltip(github_button, "Open the official Bohemia Interactive DayZ-Misc repository and its ADPL-SA licence.")
-        self._add_checkbutton(options, "Clean base-game folders", self.clean_base_game_folders_var, 1, 2, "Enabled by default. Before extraction, delete existing official folders being extracted: DZ, scripts, Core, bin, graphics, gui, languagecore and system. All contents inside those selected folders are deleted, including custom subfolders. Custom folders outside them are preserved. Scripts only leaves other official folders untouched unless DayZ-Misc is enabled. Linked roots and folders containing source data are rejected.")
+        self._add_checkbutton(options, "Clean base-game folders", self.clean_base_game_folders_var, 1, 2, "Replace selected official roots after successful extraction. Previous data is restored on failure or cancellation. Scripts only cleans scripts; other filtered profiles and archive/folder selections preserve unrelated files. Disabled by update-only mode. Use Preview cleanup to inspect exact folders and sizes.", lambda: self.render_estimate(self.plan) if self.plan else None)
         ttk.Label(
             options,
-            text="Cleanup deletes all contents inside selected official folders. Custom root folders are preserved.",
+            text="Cleanup replaces whole official folders after success. Filtered selections and update-only mode preserve unrelated files.",
             style="CardMuted.TLabel",
             wraplength=760,
         ).grid(row=2, column=0, columnspan=3, sticky="w")
+        self._add_checkbutton(options, "Update changed files only", self.incremental_var, 3, 0, "Skip verified unchanged files using a local manifest. Changed, missing or edited outputs are regenerated. Unrelated files are preserved; whole-folder cleanup is disabled. DayZ-Misc source assets are refreshed when enabled.", lambda: self.render_estimate(self.plan) if self.plan else None)
+        selection_button = ttk.Button(options, text="Select archives / folders…", command=self.choose_selection)
+        selection_button.grid(row=3, column=1, sticky="w", pady=(6, 0))
+        rescan_button = ttk.Button(options, text="Rescan", command=lambda: self.request_estimate(force=True))
+        rescan_button.grid(row=3, column=2, sticky="e", pady=(6, 0))
+        self.input_controls.extend((widget, "normal") for widget in (game_entry, game_browse, output_entry, output_browse, cfg_entry, cfg_browse, selection_button, rescan_button))
+        self.input_controls.append((profile_combo, "readonly"))
 
         estimate = tk.Frame(outer, bg=GRAPHITE_CARD, highlightbackground=GRAPHITE_BORDER, highlightthickness=1)
         estimate.pack(fill="x", pady=(0, 8))
@@ -494,20 +536,25 @@ class GameDataExtractorApp(tk.Tk):
 
         actions = ttk.Frame(outer)
         actions.pack(fill="x", pady=(0, 6))
-        self.extract_button = self.make_button(actions, "Extract Game Data", self.extract, primary=True, tooltip="Extract the selected profile into the destination folder using all available CPU cores. When cleanup is enabled, selected official folders and all their contents are deleted first.")
+        self.extract_button = self.make_button(actions, "Extract Game Data", self.extract, primary=True, tooltip="Review cleanup, extract and convert into staging, then install. Failures and cancellation restore previous output.")
         self.extract_button.pack(side="left", padx=(0, 8))
         self.extract_button.configure(state="disabled")
-        self.stop_button = self.make_button(actions, "Stop", self.stop, variant="stop", tooltip="Request cancellation. Cleanup already performed and files already written are not rolled back.")
+        self.stop_button = self.make_button(actions, "Stop", self.stop, variant="stop", tooltip="Cancel after the current file or conversion. Existing output is retained or restored before stopping.")
         self.stop_button.pack(side="left", padx=(0, 8))
         self.stop_button.configure(state="disabled")
         self.open_button = self.make_button(actions, "Open output", self.open_output, tooltip="Open the extraction destination in Explorer.")
         self.open_button.pack(side="left")
+        preview_button = self.make_button(actions, "Preview cleanup", self.preview_cleanup, tooltip="List exact folders, existing file counts and sizes affected by cleanup.")
+        preview_button.pack(side="left", padx=(8, 0))
+        self.input_controls.append((preview_button, "normal"))
+        self.make_button(actions, "Export log", self.export_log, tooltip="Save the complete log, including conversion failures, as text.").pack(side="left", padx=(8, 0))
 
         progress_frame = ttk.Frame(outer)
         progress_frame.pack(fill="x", pady=(0, 6))
         self.progress = ttk.Progressbar(progress_frame, variable=self.progress_var, maximum=100)
         self.progress.pack(fill="x", ipady=3, pady=(0, 4))
         ttk.Label(progress_frame, textvariable=self.status_var, style="Muted.TLabel").pack(anchor="w")
+        ttk.Label(progress_frame, textvariable=self.metrics_var, style="Muted.TLabel").pack(anchor="w")
 
         log_frame = ttk.LabelFrame(outer, text="Log", padding=(10, 6))
         log_frame.pack(fill="x")
@@ -569,6 +616,120 @@ class GameDataExtractorApp(tk.Tk):
         if self.plan:
             self.render_estimate(self.plan)
 
+    def choose_selection(self):
+        if self.busy or not self.game_path_var.get().strip():
+            return
+        game_path = self.game_path_var.get().strip()
+        self.set_busy(True)
+        self.status_var.set("Reading archive and folder choices...")
+
+        def worker():
+            try:
+                plan = build_extraction_plan(game_path)
+                self.events.put({"type": "selection_ready", "plan": plan})
+            except Exception as error:
+                self.events.put({"type": "error", "message": str(error)})
+
+        threading.Thread(target=worker, name="rag_selection", daemon=True).start()
+
+    def show_selection(self, plan):
+        window = tk.Toplevel(self)
+        window.title("Select archives and folders")
+        window.transient(self)
+        left = max(0, self.winfo_rootx() + (self.winfo_width() - 900) // 2)
+        top = max(0, self.winfo_rooty() + (self.winfo_height() - 540) // 2)
+        window.geometry(f"900x540+{left}+{top}")
+        window.minsize(650, 400)
+        window.grab_set()
+        frame = ttk.Frame(window, padding=12)
+        frame.pack(fill="both", expand=True)
+        frame.columnconfigure(0, weight=1)
+        frame.columnconfigure(1, weight=1)
+        frame.rowconfigure(2, weight=1)
+        ttk.Label(frame, text="Select items to restrict extraction; Ctrl/Shift selects multiple. Archive and folder restrictions combine. Selected folders include subfolders.", wraplength=820).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 10))
+        archives = sorted(name for name, _size, _mtime in plan.source_signature if name.endswith(".pbo"))
+        folders = sorted({
+            "\\".join(item.relative_path.split("\\")[:index])
+            for item in plan.entries for index in range(1, len(item.relative_path.split("\\")))
+        }, key=str.casefold)
+        restrict_archives = tk.BooleanVar(value=self.selected_archives is not None)
+        restrict_folders = tk.BooleanVar(value=self.selected_folders is not None)
+        lists = []
+        for column, (label, variable, values, selected) in enumerate((
+            ("Restrict archives", restrict_archives, archives, self.selected_archives),
+            ("Restrict folders", restrict_folders, folders, self.selected_folders),
+        )):
+            ttk.Checkbutton(frame, text=label, variable=variable).grid(row=1, column=column, sticky="w")
+            container = ttk.Frame(frame)
+            container.grid(row=2, column=column, sticky="nsew", padx=6, pady=6)
+            box = tk.Listbox(container, selectmode="extended", exportselection=False, bg=GRAPHITE_FIELD, fg=GRAPHITE_TEXT, selectbackground=GRAPHITE_ACCENT_DARK, width=35)
+            vertical = ttk.Scrollbar(container, command=box.yview)
+            horizontal = ttk.Scrollbar(container, orient="horizontal", command=box.xview)
+            container.columnconfigure(0, weight=1)
+            container.rowconfigure(0, weight=1)
+            box.grid(row=0, column=0, sticky="nsew")
+            vertical.grid(row=0, column=1, sticky="ns")
+            horizontal.grid(row=1, column=0, sticky="ew")
+            box.configure(yscrollcommand=vertical.set, xscrollcommand=horizontal.set)
+            selected_keys = {value.casefold() for value in selected or []}
+            for index, value in enumerate(values):
+                box.insert("end", value)
+                if value.casefold() in selected_keys:
+                    box.selection_set(index)
+            lists.append((box, values))
+            box.bind("<<ListboxSelect>>", lambda event, variable=variable, box=box: variable.set(bool(box.curselection())))
+        actions = ttk.Frame(frame)
+        actions.grid(row=3, column=0, columnspan=2, sticky="e", pady=(8, 0))
+
+        def apply(all_data=False):
+            selections = []
+            for variable, (box, values) in zip((restrict_archives, restrict_folders), lists):
+                selected = [values[index] for index in box.curselection()] if variable.get() and not all_data else None
+                if selected == []:
+                    messagebox.showerror(APP_TITLE, "Select at least one item in each enabled restriction.", parent=window)
+                    return
+                selections.append(selected)
+            self.selected_archives, self.selected_folders = selections
+            self.log(f"Selection: {len(self.selected_archives) if self.selected_archives is not None else 'all'} archives; {len(self.selected_folders) if self.selected_folders is not None else 'all'} folders.")
+            window.destroy()
+            self.request_estimate(force=True)
+
+        ttk.Button(actions, text="Reset to all", command=lambda: apply(True)).pack(side="left", padx=6)
+        ttk.Button(actions, text="Cancel", command=window.destroy).pack(side="left", padx=6)
+        ttk.Button(actions, text="Apply", command=apply).pack(side="left", padx=6)
+
+    def preview_cleanup(self, start_extraction=False):
+        if self.busy or self.plan is None:
+            return
+        plan = self.plan
+        output_path = self.output_path_var.get().strip()
+        if not output_path:
+            messagebox.showerror(APP_TITLE, "Select output folder.", parent=self)
+            return
+        clean = self.clean_base_game_folders_var.get()
+        incremental = self.incremental_var.get()
+        self.set_busy(True)
+        self.status_var.set("Calculating cleanup preview...")
+
+        def worker():
+            try:
+                preview = get_cleanup_preview(plan, output_path, clean, incremental, self.cancel_event)
+                self.events.put({"type": "cleanup_preview", "preview": preview, "start_extraction": start_extraction})
+            except ExtractionCancelled:
+                self.events.put({"type": "cancelled"})
+            except Exception as error:
+                self.events.put({"type": "error", "message": str(error)})
+
+        threading.Thread(target=worker, name="rag_cleanup_preview", daemon=True).start()
+
+    def export_log(self):
+        path = filedialog.asksaveasfilename(parent=self, title="Export extraction log", defaultextension=".txt", initialfile="RaG_Game_Data_Extractor.log.txt", filetypes=[("Text log", "*.txt"), ("All files", "*.*")])
+        if path:
+            try:
+                Path(path).write_text(self.log_text.get("1.0", "end-1c"), encoding="utf-8")
+            except OSError as error:
+                messagebox.showerror(APP_TITLE, str(error), parent=self)
+
     def choose_game_path(self):
         path = filedialog.askdirectory(
             title="Select DayZ installation",
@@ -606,9 +767,12 @@ class GameDataExtractorApp(tk.Tk):
 
     def current_plan_signature(self):
         game_path = os.path.normcase(os.path.abspath(self.game_path_var.get().strip()))
-        return game_path, self.profile_var.get(), self.create_dayz_script_folder_var.get()
+        return game_path, self.profile_var.get(), self.create_dayz_script_folder_var.get(), (
+            tuple(self.selected_archives) if self.selected_archives is not None else None,
+            tuple(self.selected_folders) if self.selected_folders is not None else None,
+        )
 
-    def request_estimate(self):
+    def request_estimate(self, force=False, extract_when_ready=False):
         if self.busy:
             return
 
@@ -623,7 +787,7 @@ class GameDataExtractorApp(tk.Tk):
 
         signature = self.current_plan_signature()
 
-        if self.plan is not None and self.plan_signature == signature:
+        if not force and self.plan is not None and self.plan_signature == signature and is_plan_current(self.plan):
             self.render_estimate(self.plan)
             return
 
@@ -631,6 +795,8 @@ class GameDataExtractorApp(tk.Tk):
         generation = self.estimate_generation
         include_extensions = get_profile_extensions(self.profile_var.get())
         create_dayz_script_folder = self.create_dayz_script_folder_var.get()
+        selected_archives = self.selected_archives
+        selected_folders = self.selected_folders
         self.plan = None
         self.plan_signature = None
         self.extract_button.configure(state="disabled")
@@ -649,12 +815,15 @@ class GameDataExtractorApp(tk.Tk):
                     include_extensions=include_extensions,
                     progress=report,
                     create_dayz_script_folder=create_dayz_script_folder,
+                    selected_archives=selected_archives,
+                    selected_folders=selected_folders,
                 )
                 self.events.put({
                     "type": "estimate_done",
                     "generation": generation,
                     "plan": plan,
                     "signature": signature,
+                    "extract_when_ready": extract_when_ready,
                 })
             except Exception as error:
                 self.events.put({
@@ -665,12 +834,16 @@ class GameDataExtractorApp(tk.Tk):
 
         threading.Thread(target=worker, name="rag_estimate", daemon=True).start()
 
-    def extract(self):
+    def extract(self, reviewed_cleanup=False):
         if self.busy:
             return
 
         if self.plan is None or self.plan_signature != self.current_plan_signature():
-            self.request_estimate()
+            self.request_estimate(extract_when_ready=True)
+            return
+        if not is_plan_current(self.plan):
+            self.log("Source archives changed; rescanning automatically.")
+            self.request_estimate(force=True, extract_when_ready=True)
             return
 
         output_path = self.output_path_var.get().strip()
@@ -689,15 +862,24 @@ class GameDataExtractorApp(tk.Tk):
             )
             return
 
+        if not reviewed_cleanup:
+            self.preview_cleanup(start_extraction=True)
+            return
+
         plan = self.plan
         include_dayz_misc = self.include_dayz_misc_var.get()
         clean_base_game_folders = self.clean_base_game_folders_var.get()
+        incremental = self.incremental_var.get()
         self.save_current_settings()
         self.set_busy(True)
+        self.started_at = time.monotonic()
+        self.last_rate = None
+        self.last_eta = None
         self.progress_var.set(0)
         self.status_var.set("Starting extraction...")
         self.log(f"Extracting to: {output_path}")
         self.log(f"Using all {get_recommended_workers()} available CPU cores.")
+        self.log(f"Profile: {self.profile_var.get()}; update-only: {incremental}; cleanup: {clean_base_game_folders and not incremental}.")
 
         def worker():
             try:
@@ -708,6 +890,7 @@ class GameDataExtractorApp(tk.Tk):
                     cfgconvert_exe=cfgconvert_exe,
                     include_dayz_misc=include_dayz_misc,
                     clean_base_game_folders=clean_base_game_folders,
+                    incremental=incremental,
                     cancel_event=self.cancel_event,
                     progress=self.events.put,
                 )
@@ -727,9 +910,14 @@ class GameDataExtractorApp(tk.Tk):
         self.stop_button.configure(state="normal" if busy else "disabled")
         for checkbox in self.option_checkbuttons:
             checkbox.configure(state="disabled" if busy else "normal")
+        for widget, state in self.input_controls:
+            widget.configure(state="disabled" if busy else state)
 
         if busy:
             self.cancel_event.clear()
+            self.started_at = None
+            self.last_rate = None
+            self.last_eta = None
 
     def stop(self):
         if self.busy:
@@ -738,6 +926,8 @@ class GameDataExtractorApp(tk.Tk):
             self.log("Stop requested.")
 
     def render_estimate(self, plan):
+        if plan is None or self.busy:
+            return
         free = get_free_space(self.output_path_var.get())
         total_bytes = plan.total_bytes
         total_files = len(plan.entries)
@@ -748,10 +938,10 @@ class GameDataExtractorApp(tk.Tk):
 
         self.summary_var.set(
             f"{format_byte_size(total_bytes)} · {total_files:,} files · "
-            f"{format_byte_size(free)} free"
+            f"{format_byte_size(free)} free · {format_byte_size(get_required_space(plan, self.include_dayz_misc_var.get()))} required free"
         )
         self.progress_var.set(0)
-        self.status_var.set("Ready")
+        self.status_var.set("Ready — update-only skips verified unchanged files" if self.incremental_var.get() else "Ready")
         self.extract_button.configure(state="normal")
 
         if plan.shadowed_archives:
@@ -790,6 +980,33 @@ class GameDataExtractorApp(tk.Tk):
                 self.plan = event["plan"]
                 self.plan_signature = event["signature"]
                 self.render_estimate(self.plan)
+                if event.get("extract_when_ready") and not self.closing:
+                    self.extract()
+            elif event_type == "selection_ready":
+                self.set_busy(False)
+                if not self.closing and not self.cancel_event.is_set():
+                    self.status_var.set("Ready")
+                    self.show_selection(event["plan"])
+                elif not self.closing:
+                    self.status_var.set("Selection scan cancelled")
+            elif event_type == "cleanup_preview":
+                self.set_busy(False)
+                if self.closing:
+                    continue
+                preview = event["preview"]
+                details = "\n".join(f"{item['path']} — {item['files']:,} files, {format_byte_size(item['bytes'])}" for item in preview)
+                text = "Folders replaced after successful extraction:\n\n" + details if preview else "No whole folders will be cleared. Existing matching files may be replaced."
+                self.status_var.set("Ready")
+                if self.cancel_event.is_set():
+                    self.status_var.set("Cleanup preview cancelled")
+                    continue
+                if event.get("start_extraction"):
+                    if not preview or messagebox.askyesno("Review cleanup", text + "\n\nAll contents inside these folders will be replaced. Continue?", parent=self):
+                        for item in preview:
+                            self.log(f"Cleanup: {item['path']} — {item['files']:,} files / {format_byte_size(item['bytes'])}.")
+                        self.extract(reviewed_cleanup=True)
+                else:
+                    messagebox.showinfo("Cleanup preview", text, parent=self)
             elif event_type == "estimate_error":
                 if event.get("generation") != self.estimate_generation:
                     continue
@@ -799,7 +1016,7 @@ class GameDataExtractorApp(tk.Tk):
                 self.extract_button.configure(state="disabled")
                 self.log("ERROR: " + event.get("message", "Unknown error"))
             elif event_type == "cleanup":
-                self.progress_var.set(0)
+                self.progress_var.set(99)
                 self.status_var.set(event["message"])
                 self.log(event["message"])
             elif event_type == "archive":
@@ -814,6 +1031,8 @@ class GameDataExtractorApp(tk.Tk):
                     f"{format_byte_size(event.get('bytes', 0))} / "
                     f"{format_byte_size(event.get('total_bytes', 0))}"
                 )
+                self.last_rate = event.get("bytes_per_second")
+                self.last_eta = event.get("eta_seconds")
             elif event_type == "misc_download":
                 total_bytes = event.get("total_bytes", 0)
                 downloaded = event.get("bytes", 0)
@@ -821,8 +1040,13 @@ class GameDataExtractorApp(tk.Tk):
                 self.status_var.set(f"Downloading DayZ-Misc · {format_byte_size(downloaded)}")
             elif event_type == "phase":
                 message = event.get("message", "Converting...")
+                self.last_eta = None
                 if message.startswith("Downloading"):
                     self.progress_var.set(0)
+                elif message.startswith("Checking"):
+                    self.progress_var.set(0)
+                elif message.startswith("Installing extracted"):
+                    self.progress_var.set(99)
                 elif message.startswith("Installing"):
                     self.progress_var.set(95)
                 else:
@@ -843,8 +1067,10 @@ class GameDataExtractorApp(tk.Tk):
             elif event_type == "extract_done":
                 result = event["result"]
                 self.progress_var.set(100)
-                self.status_var.set("Extraction complete")
+                self.conversion_errors = result["conversion_errors"]
+                self.status_var.set("Complete with conversion warnings" if self.conversion_errors else "Extraction complete")
                 self.set_busy(False)
+                self.metrics_var.set(f"Elapsed {format_duration(result['elapsed_seconds'])} · {result['skipped_files']:,} unchanged files skipped")
                 self.log(
                     f"Complete: {result['files']:,} files / {format_byte_size(result['bytes'])}; "
                     f"{result['workers']} automatic workers."
@@ -859,32 +1085,49 @@ class GameDataExtractorApp(tk.Tk):
                 if result["conversion_errors"]:
                     self.log(f"Conversion warnings: {len(result['conversion_errors'])}")
 
-                    for warning in result["conversion_errors"][:20]:
+                    for warning in result["conversion_errors"]:
                         self.log("WARNING: " + warning)
 
                 if result["dayz_misc_files"]:
                     self.log(f"DayZ-Misc: {result['dayz_misc_files']:,} source files overlaid.")
 
-                messagebox.showinfo(
-                    APP_TITLE,
-                    f"Extracted {result['files']:,} files.\n\nOutput: {result['output_root']}",
-                    parent=self,
-                )
+                self.log(f"Elapsed: {format_duration(result['elapsed_seconds'])}; skipped unchanged: {result['skipped_files']:,}.")
+                if not self.closing:
+                    text = f"Extracted {result['files']:,} files; skipped {result['skipped_files']:,} unchanged.\nElapsed: {format_duration(result['elapsed_seconds'])}\n\nOutput: {result['output_root']}"
+                    if self.conversion_errors:
+                        messagebox.showwarning(APP_TITLE, text + f"\n\n{len(self.conversion_errors):,} conversion warning(s). Binary files retained.\n" + "\n".join(self.conversion_errors[:5]) + "\n\nFull details available in Export log.", parent=self)
+                    else:
+                        messagebox.showinfo(APP_TITLE, text, parent=self)
             elif event_type == "cancelled":
                 self.status_var.set("Extraction cancelled")
                 self.set_busy(False)
-                self.log("Extraction cancelled.")
+                self.log("Extraction cancelled. Previous output retained or restored.")
+                if self.started_at is not None:
+                    self.metrics_var.set(f"Elapsed {format_duration(time.monotonic() - self.started_at)} · Cancelled")
             elif event_type == "error":
                 self.status_var.set("Failed")
                 self.set_busy(False)
                 self.log("ERROR: " + event.get("message", "Unknown error"))
-                messagebox.showerror(APP_TITLE, event.get("message", "Unknown error"), parent=self)
+                if self.started_at is not None:
+                    self.metrics_var.set(f"Elapsed {format_duration(time.monotonic() - self.started_at)} · Failed")
+                if not self.closing:
+                    messagebox.showerror(APP_TITLE, event.get("message", "Unknown error"), parent=self)
+                    if "rescan" in event.get("message", "").lower():
+                        self.request_estimate(force=True)
 
+        if self.closing and not self.busy:
+            self.save_current_settings()
+            self.destroy()
+            return
+        if self.busy and self.started_at is not None:
+            rate = f" · {format_byte_size(self.last_rate)}/s" if self.last_rate is not None else ""
+            eta = f" · Extraction ETA {format_duration(self.last_eta)}" if self.last_eta is not None else ""
+            self.metrics_var.set(f"Elapsed {format_duration(time.monotonic() - self.started_at)}{rate}{eta}")
         self.after(25 if not self.events.empty() else 100, self.poll_events)
 
     def log(self, message):
         self.log_text.configure(state="normal")
-        self.log_text.insert("end", message.rstrip() + "\n")
+        self.log_text.insert("end", time.strftime("[%Y-%m-%d %H:%M:%S] ") + message.rstrip() + "\n")
         self.log_text.see("end")
         self.log_text.configure(state="disabled")
 
@@ -911,6 +1154,9 @@ class GameDataExtractorApp(tk.Tk):
             "include_dayz_misc": self.include_dayz_misc_var.get(),
             "create_dayz_script_folder": self.create_dayz_script_folder_var.get(),
             "clean_base_game_folders": self.clean_base_game_folders_var.get(),
+            "incremental": self.incremental_var.get(),
+            "selected_archives": self.selected_archives,
+            "selected_folders": self.selected_folders,
         })
 
     def on_close(self):
@@ -919,6 +1165,9 @@ class GameDataExtractorApp(tk.Tk):
                 return
 
             self.cancel_event.set()
+            self.closing = True
+            self.status_var.set("Cancelling and restoring output before closing...")
+            return
 
         self.save_current_settings()
         self.destroy()

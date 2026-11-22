@@ -2,13 +2,15 @@ import difflib
 import re
 import tkinter as tk
 from pathlib import Path
-from tkinter import ttk
+from tkinter import font, ttk
 
+from rag_inspector_extract import is_cfgconvert_candidate_bin_path
 from rag_inspector_settings import resource_path
 
 APP_ICON_FILE = "assets/HEADONLY_SQUARE_2k.ico"
 MAX_SYNTAX_HIGHLIGHT_CHARS = 1_500_000
 MAX_SIDE_BY_SIDE_DIFF_LINES = 30000
+INSPECTOR_FONT = "JetBrains Mono"
 GRAPHITE_BG = "#24262b"
 GRAPHITE_FIELD = "#292c32"
 GRAPHITE_BORDER = "#4a505b"
@@ -137,8 +139,63 @@ def decode_text_data(data):
     return data.decode("utf-8", errors="replace"), "utf-8 replacement"
 
 
+class LineNumberGutter(tk.Canvas):
+    def __init__(self, parent, text):
+        super().__init__(parent, bg=GRAPHITE_BG, highlightthickness=0, borderwidth=0, width=30)
+        self.text = text
+        self.font = font.Font(root=parent, font=text.cget("font"))
+        self.numbers = None
+        self.last_number = 1
+        self.redraw_id = None
+        text.bind("<Configure>", self.schedule_redraw, add="+")
+        self.bind("<MouseWheel>", self.on_mousewheel)
+
+    def on_mousewheel(self, event):
+        self.text.event_generate("<MouseWheel>", delta=event.delta)
+        return "break"
+
+    def set_numbers(self, numbers):
+        self.numbers = numbers
+        self.last_number = next((number for number in reversed(numbers) if number is not None), 1)
+        self.schedule_redraw()
+
+    def scroll(self, scrollbar, first, last):
+        scrollbar.set(first, last)
+        self.schedule_redraw()
+
+    def schedule_redraw(self, event=None):
+        if self.redraw_id is None:
+            self.redraw_id = self.after_idle(self.redraw)
+
+    def redraw(self):
+        self.redraw_id = None
+        self.delete("all")
+        last_line = int(self.text.index("end-1c").split(".")[0])
+        last_number = last_line if self.numbers is None else self.last_number
+        width = self.font.measure("0" * max(2, len(str(last_number)))) + 16
+        if int(self.cget("width")) != width:
+            self.configure(width=width)
+        ascent = self.font.metrics("ascent")
+        first_line = int(self.text.index("@0,0").split(".")[0])
+        for line in range(first_line, last_line + 1):
+            position = self.text.dlineinfo(f"{line}.0")
+            if position is None:
+                break
+            number = line
+            if self.numbers is not None:
+                number = self.numbers[line - 1] if line <= len(self.numbers) else None
+            if number is not None:
+                _, y, _, _, baseline = position
+                self.create_text(width - 8, y + baseline - ascent, text=str(number), anchor="ne", fill=GRAPHITE_MUTED, font=self.font)
+
+    def destroy(self):
+        if self.redraw_id is not None:
+            self.after_cancel(self.redraw_id)
+        super().destroy()
+
+
 class TextViewerWindow(tk.Toplevel):
-    def __init__(self, parent, title, content, details, syntax_mode=None, actions=None):
+    def __init__(self, parent, title, content, details, syntax_mode=None, actions=None, content_font=INSPECTOR_FONT):
         super().__init__(parent)
         self.title(title)
         self.geometry("980x720")
@@ -161,17 +218,19 @@ class TextViewerWindow(tk.Toplevel):
 
         text_frame = tk.Frame(outer, bg=GRAPHITE_BORDER, highlightthickness=1, highlightbackground=GRAPHITE_BORDER)
         text_frame.grid(row=2, column=0, sticky="nsew")
-        text_frame.columnconfigure(0, weight=1)
+        text_frame.columnconfigure(1, weight=1)
         text_frame.rowconfigure(0, weight=1)
 
-        self.text = tk.Text(text_frame, wrap="none", bg=GRAPHITE_FIELD, fg=GRAPHITE_TEXT, insertbackground=GRAPHITE_TEXT, selectbackground=GRAPHITE_ACCENT_DARK, selectforeground="#ffffff", relief="flat", borderwidth=0, font=("Consolas", 10), undo=False)
-        self.text.grid(row=0, column=0, sticky="nsew")
+        self.text = tk.Text(text_frame, wrap="none", bg=GRAPHITE_FIELD, fg=GRAPHITE_TEXT, insertbackground=GRAPHITE_TEXT, selectbackground=GRAPHITE_ACCENT_DARK, selectforeground="#ffffff", relief="flat", borderwidth=0, font=(content_font, 10), undo=False)
+        self.text.grid(row=0, column=1, sticky="nsew")
+        self.line_numbers = LineNumberGutter(text_frame, self.text)
+        self.line_numbers.grid(row=0, column=0, sticky="ns")
 
         y_scroll = ttk.Scrollbar(text_frame, command=self.text.yview)
-        y_scroll.grid(row=0, column=1, sticky="ns")
+        y_scroll.grid(row=0, column=2, sticky="ns")
         x_scroll = ttk.Scrollbar(text_frame, orient="horizontal", command=self.text.xview)
-        x_scroll.grid(row=1, column=0, sticky="ew")
-        self.text.configure(yscrollcommand=y_scroll.set, xscrollcommand=x_scroll.set)
+        x_scroll.grid(row=1, column=1, sticky="ew")
+        self.text.configure(yscrollcommand=lambda first, last: self.line_numbers.scroll(y_scroll, first, last), xscrollcommand=x_scroll.set)
 
         self.text.insert("1.0", content)
         self.configure_syntax_tags()
@@ -300,8 +359,8 @@ class PboComparisonWindow(tk.Toplevel):
         panes = tk.PanedWindow(outer, orient="horizontal", bg=GRAPHITE_BORDER, sashwidth=6, relief="flat")
         panes.grid(row=4, column=0, sticky="nsew")
         outer.rowconfigure(4, weight=3)
-        self.left_text, self.left_details, self.left_scroll = self.make_diff_pane(panes, "LEFT", comparison["left"]["path"])
-        self.right_text, self.right_details, self.right_scroll = self.make_diff_pane(panes, "RIGHT", comparison["right"]["path"])
+        self.left_text, self.left_details, self.left_scroll, self.left_line_numbers = self.make_diff_pane(panes, "LEFT", comparison["left"]["path"])
+        self.right_text, self.right_details, self.right_scroll, self.right_line_numbers = self.make_diff_pane(panes, "RIGHT", comparison["right"]["path"])
         self.configure_synced_scrollbars()
         self.bind_synced_scroll()
 
@@ -314,25 +373,28 @@ class PboComparisonWindow(tk.Toplevel):
 
     def make_diff_pane(self, panes, label, path):
         frame = ttk.Frame(panes, padding=8)
-        frame.columnconfigure(0, weight=1)
+        frame.columnconfigure(1, weight=1)
         frame.rowconfigure(2, weight=1)
-        ttk.Label(frame, text=label, font=("Segoe UI", 10, "bold")).grid(row=0, column=0, sticky="w")
+        ttk.Label(frame, text=label, font=("Segoe UI", 10, "bold")).grid(row=0, column=0, columnspan=2, sticky="w")
         details = tk.StringVar(value=path)
-        ttk.Label(frame, textvariable=details, foreground=GRAPHITE_MUTED).grid(row=1, column=0, sticky="ew", pady=(0, 5))
+        ttk.Label(frame, textvariable=details, foreground=GRAPHITE_MUTED).grid(row=1, column=0, columnspan=2, sticky="ew", pady=(0, 5))
         text = tk.Text(frame, wrap="none", bg=GRAPHITE_FIELD, fg=GRAPHITE_TEXT, insertbackground=GRAPHITE_TEXT, selectbackground=GRAPHITE_ACCENT_DARK, relief="flat", borderwidth=0, font=("Consolas", 10))
-        text.grid(row=2, column=0, sticky="nsew")
+        text.grid(row=2, column=1, sticky="nsew")
+        line_numbers = LineNumberGutter(frame, text)
+        text.configure(font=line_numbers.font)
+        line_numbers.grid(row=2, column=0, sticky="ns")
         y_scroll = ttk.Scrollbar(frame, command=text.yview)
-        y_scroll.grid(row=2, column=1, sticky="ns")
+        y_scroll.grid(row=2, column=2, sticky="ns")
         x_scroll = ttk.Scrollbar(frame, orient="horizontal", command=text.xview)
-        x_scroll.grid(row=3, column=0, sticky="ew")
-        text.configure(yscrollcommand=y_scroll.set, xscrollcommand=x_scroll.set)
+        x_scroll.grid(row=3, column=1, sticky="ew")
+        text.configure(yscrollcommand=lambda first, last: line_numbers.scroll(y_scroll, first, last), xscrollcommand=x_scroll.set)
         text.tag_configure("added", background=GRAPHITE_ADDED)
         text.tag_configure("removed", background=GRAPHITE_REMOVED)
         text.tag_configure("changed", background=GRAPHITE_CHANGED)
         text.tag_configure("missing", foreground=GRAPHITE_MUTED)
         text.tag_configure("current_change", background="#365f7c")
         panes.add(frame, stretch="always")
-        return text, details, y_scroll
+        return text, details, y_scroll, line_numbers
 
     def configure_synced_scrollbars(self):
         def scroll_both(*args):
@@ -382,6 +444,10 @@ class PboComparisonWindow(tk.Toplevel):
         if not selected:
             return
         item = self.item_map[selected[0]]
+        name = item["name"]
+        family = INSPECTOR_FONT if is_text_viewable_entry(name) or is_cfgconvert_candidate_bin_path(name) else "Consolas"
+        self.left_line_numbers.font.configure(family=family)
+        self.right_line_numbers.font.configure(family=family)
         left_content, left_details = self.get_content("left", item)
         right_content, right_details = self.get_content("right", item)
         self.left_details.set(left_details)
@@ -441,8 +507,8 @@ class PboComparisonWindow(tk.Toplevel):
         self.finish_diff_render(left_rows, right_rows)
 
     def finish_diff_render(self, left_rows, right_rows):
-        self.fill_diff_text(self.left_text, left_rows)
-        self.fill_diff_text(self.right_text, right_rows)
+        self.fill_diff_text(self.left_text, left_rows, self.left_line_numbers)
+        self.fill_diff_text(self.right_text, right_rows, self.right_line_numbers)
         changed_rows = [index + 1 for index, (left, right) in enumerate(zip(left_rows, right_rows)) if left[2] in {"added", "removed", "changed"} or right[2] in {"added", "removed", "changed"}]
         self.change_blocks = []
         for row in changed_rows:
@@ -470,11 +536,11 @@ class PboComparisonWindow(tk.Toplevel):
             widget.see(f"{start}.0")
         self.change_status_var.set(f"Change {self.current_change_index + 1} / {len(self.change_blocks)}")
 
-    def fill_diff_text(self, widget, rows):
+    def fill_diff_text(self, widget, rows, line_numbers):
         widget.configure(state="normal")
         widget.delete("1.0", "end")
-        for number, content, tag in rows:
-            prefix = "       | " if number is None else f"{number:6d} | "
-            widget.insert("end", prefix + (content or "") + "\n", tag if tag else None)
+        for _, content, tag in rows:
+            widget.insert("end", (content or "") + "\n", tag if tag else None)
         widget.configure(state="disabled")
+        line_numbers.set_numbers([number for number, _, _ in rows])
         widget.yview_moveto(0)

@@ -6,6 +6,7 @@ import re
 import shutil
 import stat
 import struct
+import tempfile
 import zipfile
 from dataclasses import dataclass, replace
 from datetime import datetime
@@ -53,6 +54,38 @@ QUOTED_PATH_PATTERN = re.compile(r'''["']([^"'\r\n]*[\\/][^"'\r\n]*)["']''')
 
 class RelocatorError(Exception):
     pass
+
+
+class RelocationCancelled(RelocatorError):
+    pass
+
+
+def _check_cancelled(cancel_event):
+    if cancel_event is not None and cancel_event.is_set():
+        raise RelocationCancelled("Operation cancelled.")
+
+
+def _is_link(path):
+    if path.is_symlink():
+        return True
+    try:
+        return bool(getattr(path.lstat(), "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT)
+    except FileNotFoundError:
+        return False
+
+
+def _checked_file(root, relative_path):
+    parts = relative_path.replace("\\", "/").split("/")
+    if any(not part or part in {".", ".."} or ":" in part for part in parts):
+        raise RelocatorError(f"Invalid relative path: {relative_path}")
+    path = root
+    for part in parts:
+        path /= part
+        if _is_link(path):
+            raise RelocatorError(f"Linked path refused: {path}")
+    if not path.resolve().is_relative_to(root) or not path.is_file():
+        raise RelocatorError(f"File outside selected source or missing: {relative_path}")
+    return path
 
 
 @dataclass(frozen=True)
@@ -429,7 +462,7 @@ def _get_scan_mode(path, size, include_binary, include_pbo):
     return "auto" if size <= MAX_UNKNOWN_TEXT_BYTES else "ignore"
 
 
-def scan_references(root, old_path, new_path, include_binary=True, include_pbo=True, progress=None):
+def scan_references(root, old_path, new_path, include_binary=True, include_pbo=True, progress=None, cancel_event=None):
     root, old_path, new_path = validate_paths(root, old_path, new_path)
     changes = []
     binary_candidates = []
@@ -444,14 +477,15 @@ def scan_references(root, old_path, new_path, include_binary=True, include_pbo=T
         directories[:] = sorted(
             directory
             for directory in directories
-            if directory.casefold() not in SKIPPED_DIRECTORIES and not Path(current_root, directory).is_symlink()
+            if directory.casefold() not in SKIPPED_DIRECTORIES and not _is_link(Path(current_root, directory))
         )
         for filename in sorted(filenames):
+            _check_cancelled(cancel_event)
             path = Path(current_root, filename)
             files_seen += 1
             if progress and (files_seen == 1 or files_seen % 50 == 0):
                 progress(files_seen, str(path.relative_to(root)))
-            if path.is_symlink():
+            if _is_link(path):
                 files_ignored += 1
                 continue
             try:
@@ -580,7 +614,7 @@ def _next_backup_path(root):
     return candidate
 
 
-def _create_backup(scan):
+def _create_backup(scan, cancel_event=None):
     backup_path = _next_backup_path(scan.root)
     manifest = {
         "created": datetime.now().isoformat(timespec="seconds"),
@@ -588,11 +622,13 @@ def _create_backup(scan):
         "old_path": scan.old_path,
         "new_path": scan.new_path,
         "files": [change.relative_path for change in scan.changes],
+        "updated_sha256": {change.relative_path: hashlib.sha256(change.updated_data).hexdigest() for change in scan.changes},
     }
     try:
         with zipfile.ZipFile(backup_path, "x", compression=zipfile.ZIP_DEFLATED) as archive:
             archive.writestr("relocation_manifest.json", json.dumps(manifest, indent=2))
             for change in scan.changes:
+                _check_cancelled(cancel_event)
                 archive.writestr(change.relative_path.replace("\\", "/"), change.original_data)
     except Exception:
         try:
@@ -604,9 +640,10 @@ def _create_backup(scan):
 
 
 def _atomic_write(path, data, original_stat=None):
-    temp_path = path.with_name(f".{path.name}.ragrelocator.tmp")
+    fd, filename = tempfile.mkstemp(prefix=".ragrelocator-", suffix=".tmp", dir=path.parent)
+    temp_path = Path(filename)
     try:
-        with open(temp_path, "wb") as file:
+        with os.fdopen(fd, "wb") as file:
             file.write(data)
             file.flush()
             os.fsync(file.fileno())
@@ -621,12 +658,16 @@ def _atomic_write(path, data, original_stat=None):
         temp_path.unlink(missing_ok=True)
 
 
-def apply_scan(scan, create_backup=True):
+def apply_scan(scan, create_backup=True, cancel_event=None):
     if not scan.changes:
         raise RelocatorError("Scan contains no changes.")
     for change in scan.changes:
+        _check_cancelled(cancel_event)
         try:
-            current_data = change.path.read_bytes()
+            path = _checked_file(scan.root, change.relative_path)
+            if path != change.path:
+                raise RelocatorError(f"Scan path changed: {change.relative_path}")
+            current_data = path.read_bytes()
         except OSError as error:
             raise RelocatorError(f"Could not recheck {change.relative_path}: {error}") from error
         if current_data != change.original_data:
@@ -635,42 +676,77 @@ def apply_scan(scan, create_backup=True):
     backup_path = None
     if create_backup:
         try:
-            backup_path = _create_backup(scan)
+            backup_path = _create_backup(scan, cancel_event)
+        except RelocationCancelled:
+            raise
         except Exception as error:
             raise RelocatorError(f"Could not create backup: {error}") from error
 
     written = []
     try:
         for change in scan.changes:
-            original_stat = change.path.stat()
-            _atomic_write(change.path, change.updated_data, original_stat)
+            _check_cancelled(cancel_event)
+            path = _checked_file(scan.root, change.relative_path)
+            if path.read_bytes() != change.original_data:
+                raise RelocatorError(f"File changed after scan. Scan again: {change.relative_path}")
+            original_stat = path.stat()
+            _atomic_write(path, change.updated_data, original_stat)
             written.append((change, original_stat))
+        _check_cancelled(cancel_event)
     except Exception as error:
         rollback_errors = []
         for change, original_stat in reversed(written):
             try:
-                _atomic_write(change.path, change.original_data, original_stat)
+                path = _checked_file(scan.root, change.relative_path)
+                _atomic_write(path, change.original_data, original_stat)
             except Exception as rollback_error:
                 rollback_errors.append(f"{change.relative_path}: {rollback_error}")
         if rollback_errors:
-            raise RelocatorError(f"Write failed: {error}. Rollback also failed: {'; '.join(rollback_errors)}") from error
+            raise RelocatorError(f"Write failed: {error}. Rollback also failed: {'; '.join(rollback_errors)}. Backup: {backup_path}") from error
+        if isinstance(error, RelocationCancelled):
+            raise
         raise RelocatorError(f"Write failed; completed changes were rolled back: {error}") from error
 
     return ApplyResult(scan.changed_files, scan.replacements, backup_path)
 
 
-def _build_copy_manifest(root):
+def restore_backup(root, backup_path, cancel_event=None):
+    root = Path(root).resolve()
+    changes = []
+    with zipfile.ZipFile(backup_path) as archive:
+        manifest = json.loads(archive.read("relocation_manifest.json"))
+        if Path(manifest["source_root"]).resolve() != root:
+            raise RelocatorError("Backup belongs to a different source folder.")
+        expected = manifest.get("updated_sha256", {})
+        for name in manifest["files"]:
+            _check_cancelled(cancel_event)
+            path = _checked_file(root, name)
+            current = path.read_bytes()
+            original = archive.read(name.replace("\\", "/"))
+            if current == original:
+                continue
+            if expected and hashlib.sha256(current).hexdigest() != expected.get(name):
+                raise RelocatorError(f"File has changed since relocation: {name}")
+            changes.append(FileChange(path, name, 0, (), current, original))
+    if not changes:
+        return ApplyResult(0, 0, None)
+    scan = ScanResult(root, manifest["new_path"], manifest["old_path"], 0, 0, 0, 0, 0, tuple(changes), (), ())
+    return apply_scan(scan, create_backup=True, cancel_event=cancel_event)
+
+
+def _build_copy_manifest(root, cancel_event=None):
     manifest = {}
     for current_root, directories, filenames in os.walk(root, followlinks=False):
+        _check_cancelled(cancel_event)
         for directory in directories:
             path = Path(current_root, directory)
-            if path.is_symlink():
-                manifest[str(path.relative_to(root))] = (True, 0)
+            if _is_link(path):
+                raise RelocatorError(f"Linked directory cannot be copied safely: {path}")
         for filename in filenames:
             path = Path(current_root, filename)
-            is_symlink = path.is_symlink()
-            size = 0 if is_symlink else path.stat().st_size
-            manifest[str(path.relative_to(root))] = (is_symlink, size)
+            if _is_link(path):
+                raise RelocatorError(f"Linked file cannot be copied safely: {path}")
+            manifest[str(path.relative_to(root))] = (False, path.stat().st_size)
     return manifest
 
 
@@ -686,7 +762,7 @@ def _verify_copied_manifest(staging, manifest):
             raise RelocatorError(f"Copied file size differs: {relative_path}")
 
 
-def copy_and_apply_scan(scan, destination, progress=None):
+def copy_and_apply_scan(scan, destination, progress=None, cancel_event=None):
     source = scan.root.resolve()
     destination = Path(destination).expanduser().resolve(strict=False)
     if source == destination:
@@ -718,7 +794,7 @@ def copy_and_apply_scan(scan, destination, progress=None):
     try:
         if progress:
             progress("Building complete source file list")
-        manifest = _build_copy_manifest(source)
+        manifest = _build_copy_manifest(source, cancel_event)
         copied_paa_files = sum(
             1
             for relative_path, (is_symlink, _size) in manifest.items()
@@ -726,10 +802,18 @@ def copy_and_apply_scan(scan, destination, progress=None):
         )
         if progress:
             progress(f"Copying all {len(manifest)} file(s) to temporary folder: {destination.name}")
-        shutil.copytree(source, staging, copy_function=shutil.copy2, symlinks=True)
+        def copy_file(source_path, target_path):
+            _check_cancelled(cancel_event)
+            path = Path(source_path)
+            _checked_file(source, str(path.relative_to(source)))
+            return shutil.copy2(source_path, target_path)
+
+        shutil.copytree(source, staging, copy_function=copy_file, symlinks=True)
         if progress:
             progress("Verifying complete copied file list")
         _verify_copied_manifest(staging, manifest)
+        if _build_copy_manifest(staging, cancel_event) != manifest:
+            raise RelocatorError("Source file list changed while copying. Scan again.")
         if scan.changes:
             relocated_changes = tuple(
                 replace(change, path=staging.joinpath(*Path(change.relative_path).parts))
@@ -738,9 +822,10 @@ def copy_and_apply_scan(scan, destination, progress=None):
             relocated_scan = replace(scan, root=staging, changes=relocated_changes)
             if progress:
                 progress(f"Applying {scan.replacements} replacement(s) to copied files")
-            result = apply_scan(relocated_scan, create_backup=False)
+            result = apply_scan(relocated_scan, create_backup=False, cancel_event=cancel_event)
         else:
             result = ApplyResult(0, 0, None)
+        _check_cancelled(cancel_event)
         if destination_was_empty:
             destination.rmdir()
             destination_removed = True
@@ -766,19 +851,22 @@ def copy_and_apply_scan(scan, destination, progress=None):
         raise RelocatorError(f"Could not create relocated copy: {error}") from error
 
 
-def _read_prefix_values(root):
+def _read_prefix_values(root, cancel_event=None):
     values = []
     for current_root, directories, filenames in os.walk(root, followlinks=False):
+        _check_cancelled(cancel_event)
         directories[:] = sorted(
             directory
             for directory in directories
-            if directory.casefold() not in SKIPPED_DIRECTORIES and not Path(current_root, directory).is_symlink()
+            if directory.casefold() not in SKIPPED_DIRECTORIES and not _is_link(Path(current_root, directory))
         )
         for filename in filenames:
             if filename.casefold() not in PREFIX_FILE_NAMES:
                 continue
             path = Path(current_root, filename)
             try:
+                if _is_link(path):
+                    continue
                 data = path.read_bytes()
             except OSError:
                 continue
@@ -803,11 +891,11 @@ def _common_path_prefix(values):
     return "\\".join(common)
 
 
-def find_path_candidates(root, limit=10, progress=None):
+def find_path_candidates(root, limit=10, progress=None, cancel_event=None):
     root = Path(root)
     if not root.is_dir():
         return []
-    prefix_values = _read_prefix_values(root)
+    prefix_values = _read_prefix_values(root, cancel_event)
     candidates = {}
     for value in prefix_values:
         candidates[value.casefold()] = [value, 1000]
@@ -822,14 +910,15 @@ def find_path_candidates(root, limit=10, progress=None):
         directories[:] = sorted(
             directory
             for directory in directories
-            if directory.casefold() not in SKIPPED_DIRECTORIES and not Path(current_root, directory).is_symlink()
+            if directory.casefold() not in SKIPPED_DIRECTORIES and not _is_link(Path(current_root, directory))
         )
         for filename in sorted(filenames):
+            _check_cancelled(cancel_event)
             path = Path(current_root, filename)
             files_seen += 1
             if progress and (files_seen == 1 or files_seen % 50 == 0):
                 progress(files_seen, str(path.relative_to(root)))
-            if path.is_symlink():
+            if _is_link(path):
                 continue
             try:
                 size = path.stat().st_size
@@ -871,10 +960,10 @@ def detect_old_path(root):
     fallback = normalize_virtual_path(root.name)
     pattern = _build_path_pattern(fallback)
     for current_root, directories, filenames in os.walk(root, followlinks=False):
-        directories[:] = [directory for directory in directories if directory.casefold() not in SKIPPED_DIRECTORIES]
+        directories[:] = [directory for directory in directories if directory.casefold() not in SKIPPED_DIRECTORIES and not _is_link(Path(current_root, directory))]
         for filename in filenames:
             path = Path(current_root, filename)
-            if path.is_symlink():
+            if _is_link(path):
                 continue
             try:
                 size = path.stat().st_size

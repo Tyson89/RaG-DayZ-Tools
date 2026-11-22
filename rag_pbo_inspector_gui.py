@@ -16,6 +16,7 @@ from tkinter import filedialog, messagebox, ttk
 
 from pbo_core import (
     PboError,
+    PboExtractionCancelled,
     compare_pbo_archives,
     extract_pbo_files,
     format_byte_size,
@@ -34,12 +35,16 @@ from rag_inspector_extract import (
     is_rap_text_convert_candidate_path,
     is_rapified_data,
     is_texheaders_bin_path,
+    is_texview_texture,
+    open_texview_texture,
 )
 from rag_inspector_p3d import build_p3d_info_report, get_p3d_metadata
 from rag_inspector_settings import (
     find_cfgconvert,
+    find_texview,
     get_initial_dir_from_value,
     load_settings,
+    load_inspector_fonts,
     resource_path,
     save_settings,
 )
@@ -70,6 +75,7 @@ except Exception:
 APP_TITLE = "RaG PBO Inspector"
 APP_ICON_FILE = os.path.join("assets", "installer.ico")
 MAX_TEXT_PREVIEW_BYTES = 5 * 1024 * 1024
+MAX_TEXTURE_PREVIEW_BYTES = 128 * 1024 * 1024
 MAX_P3D_INSPECT_BYTES = 128 * 1024 * 1024
 GRAPHITE_BG = "#24262b"
 GRAPHITE_HEADER = "#1f2126"
@@ -89,7 +95,15 @@ GRAPHITE_SUCCESS_DARK = "#41684a"
 
 class PboInspectorApp(DND_ROOT_CLASS):
     def __init__(self):
-        super().__init__()
+        load_inspector_fonts()
+        tk.Tk.__init__(self)
+        self.drop_error = ""
+        if TKDND_AVAILABLE:
+            try:
+                enable_drop = getattr(TkinterDnD, "require", None) or TkinterDnD._require
+                self.TkdndVersion = enable_drop(self)
+            except (RuntimeError, tk.TclError) as error:
+                self.drop_error = str(error)
         self.saved_settings = load_settings()
         self.archive = None
         self.entries = []
@@ -100,12 +114,17 @@ class PboInspectorApp(DND_ROOT_CLASS):
         self.search_contents_var = tk.BooleanVar(value=True)
         self.search_status_var = tk.StringVar(value="")
         self.cfgconvert_exe_var = tk.StringVar(value=self.saved_settings.get("cfgconvert_exe", find_cfgconvert()))
+        self.texview_exe_var = tk.StringVar(value=self.saved_settings.get("texview_exe", "") or find_texview(self.cfgconvert_exe_var.get()))
         self.convert_bin_var = tk.BooleanVar(value=self.saved_settings.get("convert_bin_to_cpp", True))
         self.summary_var = tk.StringVar(value="No PBO loaded")
         self.drop_registered_widgets = []
         self.entry_iid_to_index = {}
         self.folder_iids = set()
         self.comparison_queue = queue.Queue()
+        self.extraction_queue = queue.Queue()
+        self.extraction_cancel = threading.Event()
+        self.extraction_running = False
+        self.closing = False
         self.comparison_running = False
 
         self.title(APP_TITLE)
@@ -239,15 +258,21 @@ class PboInspectorApp(DND_ROOT_CLASS):
         cfgconvert_entry.grid(row=3, column=1, sticky="ew", padx=(8, 8), pady=4)
         ttk.Button(path_frame, text="Browse", command=self.choose_cfgconvert_exe).grid(row=3, column=2, sticky="e", pady=4)
 
+        ttk.Label(path_frame, text="TexView.exe", style="FieldName.TLabel").grid(row=4, column=0, sticky="w", pady=4)
+        ttk.Entry(path_frame, textvariable=self.texview_exe_var).grid(row=4, column=1, sticky="ew", padx=(8, 8), pady=4)
+        ttk.Button(path_frame, text="Browse", command=self.choose_texview_exe).grid(row=4, column=2, sticky="e", pady=4)
+
         convert_check = tk.Checkbutton(path_frame, text="", variable=self.convert_bin_var, command=self.on_convert_option_changed, indicatoron=False, selectcolor=GRAPHITE_CARD_SOFT, relief="flat", borderwidth=0, padx=12, pady=7, font=("Segoe UI", 10), cursor="hand2", anchor="w", justify="left", width=72)
-        convert_check.grid(row=4, column=1, columnspan=2, sticky="ew", padx=(8, 0), pady=(4, 0))
+        convert_check.grid(row=5, column=1, columnspan=2, sticky="ew", padx=(8, 0), pady=(4, 0))
         self.convert_check = convert_check
         self.refresh_convert_check()
 
         action_frame = ttk.Frame(outer)
         action_frame.pack(fill="x", pady=(0, 10))
-        self.make_button(action_frame, "Extract all", self.extract_all, primary=True)
-        self.make_button(action_frame, "Extract selected", self.extract_selected)
+        self.extract_all_button = self.make_button(action_frame, "Extract all", self.extract_all, primary=True)
+        self.extract_selected_button = self.make_button(action_frame, "Extract selected", self.extract_selected)
+        self.cancel_extract_button = self.make_button(action_frame, "Cancel extraction", self.cancel_extraction)
+        self.cancel_extract_button.configure(state="disabled")
         self.make_button(action_frame, "View selected", self.view_selected_entry)
         self.compare_button = self.make_button(action_frame, "Compare PBOs", self.compare_pbos)
         self.make_button(action_frame, "Reload PBO", self.inspect_pbo)
@@ -302,6 +327,7 @@ class PboInspectorApp(DND_ROOT_CLASS):
     def save_settings(self):
         data = {
             "cfgconvert_exe": self.cfgconvert_exe_var.get().strip(),
+            "texview_exe": self.texview_exe_var.get().strip(),
             "convert_bin_to_cpp": bool(self.convert_bin_var.get()),
         }
         self.saved_settings = data
@@ -320,6 +346,10 @@ class PboInspectorApp(DND_ROOT_CLASS):
             self.convert_check.configure(text="  " + label, bg=GRAPHITE_FIELD, fg=GRAPHITE_MUTED, activebackground=GRAPHITE_CARD_SOFT, activeforeground=GRAPHITE_TEXT)
 
     def on_close(self):
+        if self.extraction_running:
+            self.closing = True
+            self.cancel_extraction()
+            return
         try:
             self.save_settings()
             self.unregister_file_drop()
@@ -467,12 +497,22 @@ class PboInspectorApp(DND_ROOT_CLASS):
             self.cfgconvert_exe_var.set(path)
             self.save_settings()
 
+    def choose_texview_exe(self):
+        path = filedialog.askopenfilename(title="Select TexView.exe", initialdir=get_initial_dir_from_value(self.texview_exe_var.get(), self.cfgconvert_exe_var.get()), filetypes=[("TexView", "TexView*.exe"), ("Executable", "*.exe")], parent=self)
+        if path:
+            self.texview_exe_var.set(path)
+            self.save_settings()
+        return path
+
     def register_file_drop(self):
         if self.drop_registered_widgets:
             return
 
         if not TKDND_AVAILABLE:
             self.log("WARNING: tkinterdnd2 is not installed. You can still drag a .pbo onto the EXE or use Browse.")
+            return
+        if self.drop_error:
+            self.log(f"WARNING: Drag and drop unavailable. Use Browse to open PBO files. {self.drop_error}")
             return
 
         try:
@@ -659,6 +699,10 @@ class PboInspectorApp(DND_ROOT_CLASS):
         suffix = Path(entry.name).suffix.lower()
 
         try:
+            if is_texview_texture(entry.name):
+                self.view_texture(entry)
+                return
+
             if suffix == ".p3d":
                 self.view_p3d_info(entry)
                 return
@@ -679,12 +723,23 @@ class PboInspectorApp(DND_ROOT_CLASS):
         TextViewerWindow(self, f"View: {Path(entry.name).name}", content, details, get_syntax_mode(entry.name))
         self.log(f"Previewed: {entry.name}")
 
+    def view_texture(self, entry):
+        texview_exe = self.texview_exe_var.get().strip()
+        if not os.path.isfile(texview_exe):
+            texview_exe = find_texview(self.cfgconvert_exe_var.get()) or self.choose_texview_exe()
+            if not texview_exe:
+                return
+            self.texview_exe_var.set(texview_exe)
+        data = read_pbo_entry_data(self.pbo_path_var.get().strip(), entry.name, MAX_TEXTURE_PREVIEW_BYTES)
+        open_texview_texture(texview_exe, entry.name, data)
+        self.log(f"Opened in TexView: {entry.name}")
+
     def view_p3d_info(self, entry):
         data = read_pbo_entry_data(self.pbo_path_var.get().strip(), entry.name, MAX_P3D_INSPECT_BYTES)
         metadata = get_p3d_metadata(entry, self.entries, data)
         report = build_p3d_info_report(entry, metadata)
         actions = self.get_p3d_info_actions(metadata)
-        TextViewerWindow(self, f"P3D Info: {Path(entry.name).name}", report, f"{entry.name} | {format_byte_size(get_pbo_entry_unpacked_size(entry))} | safe metadata scan only", actions=actions)
+        TextViewerWindow(self, f"P3D Info: {Path(entry.name).name}", report, f"{entry.name} | {format_byte_size(get_pbo_entry_unpacked_size(entry))} | safe metadata scan only", actions=actions, content_font="Consolas")
         self.log(f"Inspected P3D: {entry.name}")
 
     def get_p3d_info_actions(self, metadata):
@@ -723,6 +778,10 @@ class PboInspectorApp(DND_ROOT_CLASS):
             return
 
         try:
+            if is_texview_texture(entry.name):
+                self.view_texture(entry)
+                return
+
             if Path(entry.name).suffix.lower() == ".bin":
                 content, details = self.load_bin_preview(entry)
                 syntax_mode = "c_like"
@@ -837,6 +896,8 @@ class PboInspectorApp(DND_ROOT_CLASS):
         self.extract_entries(None)
 
     def extract_entries(self, selected_names):
+        if self.extraction_running:
+            return
         pbo_path = self.pbo_path_var.get().strip()
         output_dir = self.output_dir_var.get().strip() or self.get_default_output_dir()
 
@@ -859,114 +920,94 @@ class PboInspectorApp(DND_ROOT_CLASS):
         if not self.confirm_output_folder(output_dir):
             return
 
-        try:
-            result = extract_pbo_files(pbo_path, output_dir, selected_names, self.log)
-        except Exception as e:
-            messagebox.showerror(APP_TITLE, str(e), parent=self)
-            return
-
-        self.convert_extracted_rap_text_files(result.get("paths", []))
-        self.convert_extracted_bin_files(result.get("paths", []))
-        self.log(f"Extracted {result['files']} file(s) / {format_byte_size(result['bytes'])} -> {result['output_dir']}")
-        messagebox.showinfo(APP_TITLE, f"Extracted {result['files']} file(s).", parent=self)
-
-    def convert_extracted_rap_text_files(self, paths):
-        candidate_paths = [path for path in paths if is_rap_text_convert_candidate_path(path)]
-
-        if not candidate_paths:
-            return
-
-        rap_paths = []
-
-        for path in candidate_paths:
-            try:
-                with open(path, "rb") as file:
-                    if is_rapified_data(file.read(16)):
-                        rap_paths.append(path)
-            except Exception as e:
-                self.log(f"WARNING: Could not check material file for raP data: {path} ({e})")
-
-        if not rap_paths:
-            return
-
-        if not self.convert_bin_var.get():
-            self.log(f"Skipped rapified material conversion for {len(rap_paths)} file(s).")
-            return
-
         cfgconvert_exe = self.cfgconvert_exe_var.get().strip()
+        convert = self.convert_bin_var.get()
+        self.extraction_cancel.clear()
+        self.extraction_running = True
+        self.extract_all_button.configure(state="disabled")
+        self.extract_selected_button.configure(state="disabled")
+        self.cancel_extract_button.configure(state="normal")
+        self.log("Staging extraction…")
 
-        if not cfgconvert_exe or not os.path.isfile(cfgconvert_exe):
-            self.log(f"WARNING: {len(rap_paths)} rapified material file(s) were extracted, but CfgConvert.exe is not configured. They were left as binary raP data.")
-            messagebox.showwarning(APP_TITLE, "Extracted rapified material file(s), but CfgConvert.exe is not configured.\n\nSelect CfgConvert.exe to make them readable.", parent=self)
-            return
+        def log(message):
+            self.extraction_queue.put(("log", message))
 
-        converted = 0
-        failed = 0
+        def prepare(paths, check_cancelled):
+            if convert:
+                self.convert_extracted_rap_text_files(paths, cfgconvert_exe, log, check_cancelled)
+                self.convert_extracted_bin_files(paths, cfgconvert_exe, log, check_cancelled)
 
-        for path in rap_paths:
+        def worker():
             try:
-                path_obj = Path(path)
-                temp_path = path_obj.with_name(f"{path_obj.stem}.__rag_text{path_obj.suffix}")
-                converted_path = convert_rap_to_text(cfgconvert_exe, path, str(temp_path), self.log)
-                os.replace(converted_path, path)
-                converted += 1
-                self.log(f"Converted rapified material to text: {path}")
-            except Exception as e:
-                failed += 1
-                self.log(f"WARNING: Could not convert rapified material to text: {path} ({e})")
+                result = extract_pbo_files(pbo_path, output_dir, selected_names, log, self.extraction_cancel, prepare)
+                self.extraction_queue.put(("done", result))
+            except PboExtractionCancelled:
+                self.extraction_queue.put(("cancelled", None))
+            except Exception as error:
+                self.extraction_queue.put(("error", str(error)))
 
-        if converted or failed:
-            self.log(f"Rapified material conversion summary: converted={converted}, failed={failed}")
+        threading.Thread(target=worker, daemon=True).start()
+        self.after(50, self.poll_extraction)
 
-        if failed:
-            messagebox.showwarning(APP_TITLE, f"Converted {converted} rapified material file(s), failed {failed}. Check the inspector log.", parent=self)
+    def cancel_extraction(self):
+        self.extraction_cancel.set()
+        self.cancel_extract_button.configure(state="disabled")
+        self.log("Cancelling extraction…")
 
-    def convert_extracted_bin_files(self, paths):
-        bin_paths = [path for path in paths if str(path).lower().endswith(".bin")]
-
-        if not bin_paths:
-            return
-
-        skipped_bin_paths = [path for path in bin_paths if not is_cfgconvert_candidate_bin_path(path)]
-        bin_paths = [path for path in bin_paths if is_cfgconvert_candidate_bin_path(path)]
-
-        for skipped_path in skipped_bin_paths:
-            if is_texheaders_bin_path(skipped_path):
-                self.log(f"Skipped .bin -> .cpp conversion for texHeaders.bin: {skipped_path}")
+    def poll_extraction(self):
+        for _ in range(100):
+            try:
+                event, payload = self.extraction_queue.get_nowait()
+            except queue.Empty:
+                break
+            if event == "log":
+                self.log(payload)
+                continue
+            self.extraction_running = False
+            self.extract_all_button.configure(state="normal")
+            self.extract_selected_button.configure(state="normal")
+            self.cancel_extract_button.configure(state="disabled")
+            if event == "error":
+                self.log(f"ERROR: {payload}")
+                messagebox.showerror(APP_TITLE, payload, parent=self)
+            elif event == "cancelled":
+                self.log("Extraction cancelled. Previous files preserved.")
             else:
-                self.log(f"Skipped .bin -> .cpp conversion for unsupported .bin file: {skipped_path}")
-
-        if not bin_paths:
+                self.log(f"Extracted {payload['files']} file(s) / {format_byte_size(payload['bytes'])} -> {payload['output_dir']}")
+                if not self.closing:
+                    messagebox.showinfo(APP_TITLE, f"Extracted {payload['files']} file(s).", parent=self)
+            if self.closing:
+                self.on_close()
             return
+        self.after(50, self.poll_extraction)
 
-        if not self.convert_bin_var.get():
-            self.log(f"Skipped .bin -> .cpp conversion for {len(bin_paths)} file(s).")
-            return
+    def convert_extracted_rap_text_files(self, paths, cfgconvert_exe, log, check_cancelled):
+        for path in map(Path, paths):
+            check_cancelled()
+            if not is_rap_text_convert_candidate_path(path):
+                continue
+            with path.open("rb") as file:
+                if not is_rapified_data(file.read(16)):
+                    continue
+            if not os.path.isfile(cfgconvert_exe):
+                log(f"WARNING: CfgConvert.exe is not configured. Kept binary material: {path.name}")
+                continue
+            with tempfile.TemporaryDirectory(dir=path.parent) as temp:
+                converted = convert_rap_to_text(cfgconvert_exe, path, Path(temp) / path.name, log)
+                check_cancelled()
+                os.replace(converted, path)
+            log(f"Converted rapified material to text: {path.name}")
 
-        cfgconvert_exe = self.cfgconvert_exe_var.get().strip()
-
-        if not cfgconvert_exe or not os.path.isfile(cfgconvert_exe):
-            self.log(f"WARNING: {len(bin_paths)} .bin file(s) were extracted, but CfgConvert.exe is not configured. They were not converted to .cpp.")
-            messagebox.showwarning(APP_TITLE, "Extracted .bin file(s), but CfgConvert.exe is not configured.\n\nSelect CfgConvert.exe to convert .bin files to .cpp.", parent=self)
-            return
-
-        converted = 0
-        failed = 0
-
-        for bin_path in bin_paths:
-            try:
-                cpp_path = convert_bin_to_cpp(cfgconvert_exe, bin_path, self.log)
-                converted += 1
-                self.log(f"Converted .bin -> .cpp: {cpp_path}")
-            except Exception as e:
-                failed += 1
-                self.log(f"WARNING: Could not convert .bin to .cpp: {bin_path} ({e})")
-
-        if converted or failed:
-            self.log(f"CfgConvert summary: converted={converted}, failed={failed}")
-
-        if failed:
-            messagebox.showwarning(APP_TITLE, f"Converted {converted} .bin file(s), failed {failed}. Check the inspector log.", parent=self)
+    def convert_extracted_bin_files(self, paths, cfgconvert_exe, log, check_cancelled):
+        for path in paths:
+            check_cancelled()
+            if not is_cfgconvert_candidate_bin_path(path):
+                continue
+            if not os.path.isfile(cfgconvert_exe):
+                log(f"WARNING: CfgConvert.exe is not configured. Kept binary config: {Path(path).name}")
+                continue
+            cpp_path = convert_bin_to_cpp(cfgconvert_exe, path, log)
+            log(f"Converted .bin to .cpp: {Path(cpp_path).name}")
 
     def open_output_folder(self):
         output_dir = self.output_dir_var.get().strip() or self.get_default_output_dir()

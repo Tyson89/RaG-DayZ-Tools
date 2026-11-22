@@ -1,7 +1,9 @@
 import hashlib
 import os
 import re
+import shutil
 import struct
+import tempfile
 from datetime import datetime
 from pathlib import Path
 
@@ -321,10 +323,92 @@ def get_safe_pbo_extract_path(output_dir, entry_name):
     return target
 
 
-def extract_pbo_files(pbo_path, output_dir, selected_names=None, log=None):
+class PboExtractionCancelled(PboError):
+    pass
+
+
+def extract_pbo_files(pbo_path, output_dir, selected_names=None, log=None, cancel_event=None, prepare=None):
+    output_root = Path(output_dir).resolve()
+    output_root.mkdir(parents=True, exist_ok=True)
+    transaction = Path(tempfile.mkdtemp(prefix=".rag-inspector-", dir=output_root))
+    stage = transaction / "stage"
+    backup = transaction / "backup"
+    replaced = []
+    created = []
+    keep_backup = False
+
+    def check_cancelled():
+        if cancel_event is not None and cancel_event.is_set():
+            raise PboExtractionCancelled("Extraction cancelled.")
+
+    try:
+        check_cancelled()
+        result = _stage_pbo_files(pbo_path, stage, selected_names, log, check_cancelled)
+        if prepare:
+            prepare(result["paths"], check_cancelled)
+        installs = []
+        archive = Path(pbo_path).resolve()
+        for staged in sorted(stage.rglob("*")):
+            check_cancelled()
+            if not staged.is_file():
+                continue
+            relative = staged.relative_to(stage)
+            target = get_safe_pbo_extract_path(output_root, str(relative))
+            if target != output_root / relative or target == archive or target.is_dir():
+                raise PboError(f"Cannot replace linked path, directory, or source archive: {target}")
+            installs.append((staged, target, relative))
+        for staged, target, relative in installs:
+            check_cancelled()
+            if get_safe_pbo_extract_path(output_root, str(relative)) != target:
+                raise PboError(f"Destination changed during extraction: {target}")
+            missing = []
+            parent = target.parent
+            while not parent.exists():
+                missing.append(parent)
+                parent = parent.parent
+            for directory in reversed(missing):
+                directory.mkdir()
+                created.append(directory)
+            if target.exists():
+                saved = backup / relative
+                saved.parent.mkdir(parents=True, exist_ok=True)
+                os.replace(target, saved)
+                replaced.append((saved, target))
+            os.replace(staged, target)
+            replaced.append((target, staged))
+        check_cancelled()
+        result["paths"] = [str(output_root / Path(path).relative_to(stage)) for path in result["paths"]]
+        result["output_dir"] = str(output_root)
+        return result
+    except Exception as error:
+        failures = []
+        for source, target in reversed(replaced):
+            try:
+                os.replace(source, target)
+            except OSError as restore_error:
+                failures.append(str(restore_error))
+        for directory in reversed(created):
+            try:
+                directory.rmdir()
+            except OSError:
+                pass
+        if failures:
+            keep_backup = True
+            raise PboError(f"{error}. Rollback incomplete. Recovery files: {transaction}. {failures[0]}") from error
+        raise
+    finally:
+        if not keep_backup and transaction.parent == output_root:
+            shutil.rmtree(transaction, ignore_errors=True)
+
+
+def _stage_pbo_files(pbo_path, output_dir, selected_names, log, check_cancelled):
+    source_details = os.stat(pbo_path)
     archive = read_pbo_archive(pbo_path)
     selected = set(selected_names or [])
-    should_filter = bool(selected)
+    should_filter = selected_names is not None
+    missing = selected.difference(entry.name for entry in archive["entries"])
+    if missing:
+        raise PboError(f"Selected entry is missing from this archive: {min(missing)}")
     output_root = Path(output_dir)
     output_root.mkdir(parents=True, exist_ok=True)
     extracted = 0
@@ -333,6 +417,7 @@ def extract_pbo_files(pbo_path, output_dir, selected_names=None, log=None):
 
     with open(pbo_path, "rb") as source:
         for entry in archive["entries"]:
+            check_cancelled()
             if should_filter and entry.name not in selected:
                 continue
 
@@ -340,6 +425,8 @@ def extract_pbo_files(pbo_path, output_dir, selected_names=None, log=None):
                 raise PboError(f"Cannot extract unsupported PBO entry: {entry.name} ({get_pbo_method_label(entry.packing_method)})")
 
             target = get_safe_pbo_extract_path(output_dir, entry.name)
+            if target.exists():
+                raise PboError(f"Multiple entries claim the same output: {entry.name}")
             target.parent.mkdir(parents=True, exist_ok=True)
 
             if entry.packing_method == PBO_STORED_METHOD:
@@ -348,6 +435,7 @@ def extract_pbo_files(pbo_path, output_dir, selected_names=None, log=None):
 
                 with open(target, "wb") as out:
                     while remaining > 0:
+                        check_cancelled()
                         chunk = source.read(min(COPY_CHUNK_SIZE, remaining))
 
                         if not chunk:
@@ -370,6 +458,9 @@ def extract_pbo_files(pbo_path, output_dir, selected_names=None, log=None):
                 suffix = " (decompressed)" if is_pbo_entry_compressed(entry) else ""
                 log(f"Extracted: {entry.name}{suffix}")
 
+    current = os.stat(pbo_path)
+    if (current.st_size, current.st_mtime_ns, current.st_ino) != (source_details.st_size, source_details.st_mtime_ns, source_details.st_ino):
+        raise PboError("Source archive changed during extraction.")
     if extracted == 0:
         raise PboError("No PBO entries were selected for extraction.")
 

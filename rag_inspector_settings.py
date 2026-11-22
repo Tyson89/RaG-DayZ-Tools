@@ -11,6 +11,16 @@ def resource_path(relative_path):
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), relative_path)
 
 
+def load_inspector_fonts():
+    if os.name == "nt":
+        from ctypes import WinDLL, c_int, c_void_p, c_wchar_p
+
+        add_font = WinDLL("gdi32").AddFontResourceExW
+        add_font.argtypes = (c_wchar_p, c_int, c_void_p)
+        add_font.restype = c_int
+        add_font(resource_path("fonts/JetBrainsMono-Regular.ttf"), 0x10, None)
+
+
 def get_initial_dir_from_value(value, fallback=""):
     value = value.strip() if value else ""
     fallback = fallback.strip() if fallback else ""
@@ -66,3 +76,13 @@ def find_cfgconvert():
     pf86 = os.environ.get("ProgramFiles(x86)", "C:/Program Files (x86)")
     pf = os.environ.get("ProgramFiles", "C:/Program Files")
     return find_tool([Path(pf86) / "Steam/steamapps/common/DayZ Tools/Bin/CfgConvert/CfgConvert.exe", Path(pf) / "Steam/steamapps/common/DayZ Tools/Bin/CfgConvert/CfgConvert.exe"])
+
+
+def find_texview(cfgconvert_exe=""):
+    from rag_build_pipeline import get_dayz_tools_candidates
+
+    candidates = []
+    if cfgconvert_exe:
+        candidates.append(Path(cfgconvert_exe).parent.parent / "ImageToPAA" / "TexView.exe")
+    candidates.extend(get_dayz_tools_candidates("Bin", "ImageToPAA", "TexView.exe"))
+    return find_tool(candidates)

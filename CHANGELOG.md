@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.0.8
+
+- PBO Builder adds a built-in DayZ Diag launcher with optional post-build startup and automatic loading of the build output. Download official stock missions, add local mods, or select all detected Workshop mods. Configure COT or VPP Admin Tools with a SteamID64. VPP's admin password prompt is disabled on the local server.
+- PBO Builder verifies PBO checksums and signatures before reusing cached builds, detects source changes during packing, and preserves previous output on failure.
+- Game Data Extractor preserves existing `DZ` data during Scripts only cleanup. It adds selective extraction, incremental updates, cleanup previews, disk-space checks, progress estimates, and log export. Failed or cancelled extractions roll back changes.
+- PBO Inspector fixes `config.bin` previews and opens PAA, PNG, TGA, and other textures in TexView. Text previews and diffs use line numbers and JetBrains Mono. Extraction supports cancellation with rollback.
+- Mod Relocator adds cancellation and backup restore, guards against linked paths, and rolls back interrupted changes.
+- Workshop Publisher rechecks file hashes before upload and saves logs for failed publishes.
+- Tools Updater adds cancellable downloads and stricter installer checksum checks. Failed or cancelled downloads preserve previously verified installers.
+
 ## 1.0.7
 
 - Added Nasdara road parts and HV3/VHV powerline source assets from DayZ-Misc, with correct virtual paths and updated extraction estimates.

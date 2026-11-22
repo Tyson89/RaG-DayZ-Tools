@@ -1,9 +1,12 @@
 import os
 import re
 import subprocess
+import tempfile
+import threading
 from pathlib import Path
 
 TEXHEADERS_BIN_NAME = "texheaders.bin"
+TEXVIEW_EXTENSIONS = {".paa", ".pac", ".png", ".tga", ".jpg", ".jpeg"}
 RAP_TEXT_CONVERT_EXTENSIONS = {
     ".bisurf",
     ".mat",
@@ -21,6 +24,35 @@ def is_texheaders_bin_path(path):
 def is_cfgconvert_candidate_bin_path(path):
     file_path = Path(str(path).replace("\\", "/"))
     return file_path.suffix.lower() == ".bin" and file_path.name.lower() != TEXHEADERS_BIN_NAME
+
+
+def is_texview_texture(path):
+    return Path(str(path).replace("\\", "/")).suffix.lower() in TEXVIEW_EXTENSIONS
+
+
+def open_texview_texture(texview_exe, entry_name, data):
+    if not is_texview_texture(entry_name):
+        raise ValueError(f"TexView does not support this file extension: {entry_name}")
+    exe = Path(texview_exe).resolve()
+    name = Path(entry_name.replace("\\", "/"))
+    stem = re.sub(r"[^a-zA-Z0-9_]", "_", name.stem)[:100]
+    extension = name.suffix.lower().replace(".jpeg", ".jpg")
+    temp = tempfile.TemporaryDirectory(prefix="rag_texview_")
+    try:
+        preview = Path(temp.name) / f"preview_{stem}{extension}"
+        preview.write_bytes(data)
+        process = subprocess.Popen([str(exe), str(preview)], cwd=exe.parent)
+    except Exception:
+        temp.cleanup()
+        raise
+
+    def cleanup():
+        try:
+            process.wait()
+        finally:
+            temp.cleanup()
+
+    threading.Thread(target=cleanup, name="rag_texview_preview", daemon=False).start()
 
 
 def is_rapified_data(data):

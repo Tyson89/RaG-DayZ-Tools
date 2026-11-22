@@ -132,15 +132,16 @@ def select_installer_asset(release: dict):
 
 def select_checksum_asset(release: dict, installer_name: str):
     assets = release.get("assets", []) if isinstance(release, dict) else []
-    expected_names = {
+    expected_names = (
         f"{installer_name}.sha256".casefold(),
         f"{Path(installer_name).stem}.sha256".casefold(),
         "sha256sums.txt",
         "checksums.txt",
-    }
-    for asset in assets:
-        if str(asset.get("name", "")).casefold() in expected_names:
-            return asset
+    )
+    for name in expected_names:
+        for asset in assets:
+            if str(asset.get("name", "")).casefold() == name:
+                return asset
     return None
 
 
@@ -176,19 +177,26 @@ def select_latest_update(releases: list[dict], current_version: str):
     }
 
 
-def parse_checksum(text: str, installer_name: str) -> str:
-    fallback = ""
+def parse_checksum(text: str, installer_name: str, allow_unnamed=True) -> str:
+    unnamed = []
+    named = False
+    expected = Path(installer_name).name.casefold()
+    matches = set()
     for line in str(text).splitlines():
-        match = re.search(r"\b([0-9a-fA-F]{64})\b(?:\s+[* ]?(.+))?", line.strip())
+        match = re.fullmatch(r"([0-9a-fA-F]{64})(?:\s+\*?(.+))?", line.strip())
         if not match:
             continue
         digest = match.group(1).casefold()
         filename = (match.group(2) or "").strip()
-        if filename and Path(filename).name.casefold() == Path(installer_name).name.casefold():
-            return digest
-        if not fallback:
-            fallback = digest
-    return fallback
+        if filename:
+            named = True
+            if Path(filename.replace("\\", "/")).name.casefold() == expected:
+                matches.add(digest)
+        else:
+            unnamed.append(digest)
+    if named:
+        return next(iter(matches)) if len(matches) == 1 else ""
+    return unnamed[0] if allow_unnamed and len(unnamed) == 1 else ""
 
 
 def expected_installer_digest(update: dict) -> str:
@@ -203,41 +211,62 @@ def expected_installer_digest(update: dict) -> str:
         checksum_url = str(checksum_asset.get("browser_download_url") or "")
         if checksum_url:
             checksum_text = github_request(checksum_url, accept="application/octet-stream", timeout=30).decode("utf-8", errors="replace")
-            return parse_checksum(checksum_text, installer.get("name", ""))
+            name = installer.get("name", "")
+            dedicated = str(checksum_asset.get("name", "")).casefold() in {
+                f"{name}.sha256".casefold(), f"{Path(name).stem}.sha256".casefold(),
+            }
+            return parse_checksum(checksum_text, name, allow_unnamed=dedicated)
     return ""
 
 
-def download_update(update: dict, output_dir=None) -> Path:
+class UpdateCancelled(UpdateError):
+    pass
+
+
+def download_update(update: dict, output_dir=None, progress=None, cancel_event=None) -> Path:
     installer = update["installer"]
     installer_name = Path(str(installer.get("name") or "RaG_PBO_Tools_Setup.exe")).name
     download_url = str(installer.get("browser_download_url") or "")
     if not download_url:
         raise UpdateError("Release installer has no download URL.")
+    def check_cancelled():
+        if cancel_event is not None and cancel_event.is_set():
+            raise UpdateCancelled("Download cancelled.")
+
+    check_cancelled()
     expected_digest = expected_installer_digest(update)
+    check_cancelled()
     if not expected_digest:
         raise UpdateError("Release installer has no SHA-256 digest or checksum asset.")
 
     target_dir = Path(output_dir) if output_dir else Path(tempfile.gettempdir()) / "RaG PBO Tools Updates"
     target_dir.mkdir(parents=True, exist_ok=True)
     target = target_dir / installer_name
-    partial = target.with_suffix(target.suffix + ".part")
+    fd, filename = tempfile.mkstemp(prefix="rag-update-", suffix=".part", dir=target_dir)
+    partial = Path(filename)
     digest = hashlib.sha256()
     request = urllib.request.Request(download_url, headers={"User-Agent": USER_AGENT})
     try:
-        with urllib.request.urlopen(request, timeout=120) as response, partial.open("wb") as output:
+        with os.fdopen(fd, "wb") as output, urllib.request.urlopen(request, timeout=30) as response:
+            total = response.headers.get("Content-Length", "") or ""
+            total = int(total) if total.isdecimal() else 0
+            downloaded = 0
             while True:
+                check_cancelled()
                 chunk = response.read(1024 * 1024)
                 if not chunk:
                     break
                 output.write(chunk)
                 digest.update(chunk)
+                downloaded += len(chunk)
+                if progress:
+                    progress(downloaded, total)
+        check_cancelled()
+        if digest.hexdigest() != expected_digest.casefold():
+            raise UpdateError("Downloaded installer failed SHA-256 verification.")
+        os.replace(partial, target)
+        return target
     except (OSError, urllib.error.URLError) as exc:
-        partial.unlink(missing_ok=True)
         raise UpdateError(f"Installer download failed: {exc}") from exc
-
-    actual_digest = digest.hexdigest().casefold()
-    if actual_digest != expected_digest.casefold():
+    finally:
         partial.unlink(missing_ok=True)
-        raise UpdateError("Downloaded installer failed SHA-256 verification.")
-    os.replace(partial, target)
-    return target

@@ -11,7 +11,7 @@ from pathlib import Path
 from tkinter import messagebox, ttk
 
 from rag_licence import make_licence_button
-from rag_update_check import UpdateError, check_for_update, download_update
+from rag_update_check import UpdateCancelled, UpdateError, check_for_update, download_update
 from rag_version import APP_VERSION
 
 
@@ -139,7 +139,13 @@ class RaGToolsUpdaterApp(tk.Tk):
         self.release_button.configure(state="disabled")
         self.install_button = self.make_button(actions, "Download and Install", self.start_download, update=True)
         self.install_button.configure(state="disabled")
-        self.make_button(actions, "Close", self.destroy, right=True)
+        self.download_cancel = threading.Event()
+        self.downloading = False
+        self.close_after_download = False
+        self.make_button(actions, "Close", self.on_close, right=True)
+        self.cancel_button = self.make_button(actions, "Cancel download", self.cancel_download, right=True)
+        self.cancel_button.configure(state="disabled")
+        self.protocol("WM_DELETE_WINDOW", self.on_close)
 
     def make_button(self, parent, text, command, update=False, right=False):
         background = GRAPHITE_SUCCESS_DARK if update else GRAPHITE_CARD_SOFT
@@ -186,6 +192,7 @@ class RaGToolsUpdaterApp(tk.Tk):
         self.available_update = None
         self.release_button.configure(state="disabled")
         self.latest_var.set("Checking...")
+        self.progress.configure(mode="indeterminate", value=0)
         self.set_notes("Checking GitHub releases...")
         self.set_busy(True, "Checking for updates...")
         threading.Thread(target=self.check_worker, daemon=True).start()
@@ -211,14 +218,34 @@ class RaGToolsUpdaterApp(tk.Tk):
     def start_download(self):
         if self.busy or not self.available_update:
             return
+        self.download_cancel.clear()
+        self.downloading = True
+        self.install_button.configure(text="Download and Install")
+        self.cancel_button.configure(state="normal")
+        self.progress.configure(mode="indeterminate", value=0)
         self.set_busy(True, f"Downloading {self.available_update['name']}...")
         threading.Thread(target=self.download_worker, args=(self.available_update,), daemon=True).start()
 
     def download_worker(self, update):
         try:
-            self.events.put(("download_done", download_update(update)))
+            path = download_update(update, progress=lambda count, total: self.events.put(("download_progress", (count, total))), cancel_event=self.download_cancel)
+            self.events.put(("download_done", path))
+        except UpdateCancelled:
+            self.events.put(("download_cancelled", None))
         except (UpdateError, OSError, ValueError) as exc:
             self.events.put(("error", f"Update download failed:\n\n{exc}"))
+
+    def cancel_download(self):
+        self.download_cancel.set()
+        self.cancel_button.configure(state="disabled")
+        self.status_var.set("Cancelling download…")
+
+    def on_close(self):
+        if self.downloading:
+            self.close_after_download = True
+            self.cancel_download()
+        else:
+            self.destroy()
 
     def launch_installer(self, installer_path):
         self.set_busy(False, "Installer verified. Starting setup...")
@@ -240,11 +267,30 @@ class RaGToolsUpdaterApp(tk.Tk):
                 event_type, payload = self.events.get_nowait()
                 if event_type == "check_done":
                     self.handle_check_done(payload)
-                elif event_type == "download_done":
-                    self.launch_installer(payload)
-                elif event_type == "error":
-                    self.set_busy(False, "Update failed.")
-                    messagebox.showerror(APP_TITLE, payload, parent=self)
+                elif event_type == "download_progress":
+                    if self.download_cancel.is_set():
+                        continue
+                    count, total = payload
+                    if total:
+                        self.progress.stop()
+                        self.progress.configure(mode="determinate", maximum=total, value=count)
+                    self.status_var.set(f"Downloaded {count / 1048576:.1f} MB" + (f" of {total / 1048576:.1f} MB" if total else ""))
+                elif event_type in {"download_done", "error", "download_cancelled"}:
+                    was_downloading = self.downloading
+                    self.downloading = False
+                    self.cancel_button.configure(state="disabled")
+                    if self.close_after_download:
+                        self.destroy()
+                        return
+                    cancelled = event_type == "download_cancelled" or (was_downloading and self.download_cancel.is_set())
+                    if event_type == "download_done" and not cancelled:
+                        self.launch_installer(payload)
+                    else:
+                        if self.available_update:
+                            self.install_button.configure(text="Retry Download")
+                        self.set_busy(False, "Download cancelled." if cancelled else "Update failed.")
+                        if not cancelled:
+                            messagebox.showerror(APP_TITLE, payload, parent=self)
         except queue.Empty:
             pass
         self.after(100, self.poll_events)

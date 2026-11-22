@@ -57,6 +57,7 @@ from rag_builder_common import (
 )
 from rag_builder_storage import (
     create_build_log_path,
+    get_app_data_dir,
     get_logs_dir,
     load_build_cache,
     load_saved_profiles,
@@ -67,6 +68,8 @@ from rag_builder_storage import (
     save_saved_profiles,
     save_saved_settings,
 )
+from rag_local_server import LocalServerSession, download_stock_mission, find_diag_installs, plan_local_server
+from rag_local_server_gui import LocalServerWindow
 from rag_preflight import run_preflight_for_targets
 from rag_licence import LICENCE_NAME as APP_LICENSE_NAME, LICENCE_TEXT as APP_LICENSE_TEXT
 from rag_updater_launcher import launch_updater
@@ -390,6 +393,7 @@ class RaGPboBuilderApp(tk.Tk):
 
         self.log_queue = queue.Queue()
         self.worker_thread = None
+        self.closing_after_build = False
         self.cancel_event = threading.Event()
         self.is_building = False
         self.current_log_file = None
@@ -437,6 +441,16 @@ class RaGPboBuilderApp(tk.Tk):
         self.dssignfile_exe_var = tk.StringVar(value=self.saved_settings.get("dssignfile_exe", find_dssignfile()))
         self.private_key_var = tk.StringVar(value=self.saved_settings.get("private_key", ""))
         self.server_launcher_var = tk.StringVar(value=self.saved_settings.get("server_launcher", ""))
+        saved_server = self.saved_settings.get("local_server")
+        self.local_server_settings = dict(saved_server) if isinstance(saved_server, dict) else {}
+        self.local_server_settings.setdefault("mode", "diag")
+        self.local_server_root = get_app_data_dir() / "local_server"
+        self.local_server_status = tk.StringVar(value="Local server stopped")
+        self.local_server_window = None
+        self.local_server_session = None
+        self.local_server_events = queue.Queue()
+        self.local_server_busy = False
+        self.local_mission_downloading = False
         self.project_root_var = tk.StringVar(value=self.saved_settings.get("project_root", DEFAULT_PROJECT_ROOT))
         self.temp_dir_var = tk.StringVar(value=self.saved_settings.get("temp_dir", DEFAULT_TEMP_DIR))
         self.binarize_addon_folders_var = tk.StringVar(value=self.saved_settings.get("binarize_addon_folders", ""))
@@ -474,19 +488,21 @@ class RaGPboBuilderApp(tk.Tk):
         self.update_profile_dirty_state()
         self.save_profile_store()
         self._poll_log_queue()
+        self.after(500, self.poll_managed_server)
         self.bind("<Configure>", self.on_window_configure)
         self.protocol("WM_DELETE_WINDOW", self.on_close)
 
-    def set_window_icon(self):
+    def set_window_icon(self, window=None):
+        window = window or self
         icon_path = resource_path(APP_ICON_FILE)
         if not os.path.isfile(icon_path):
             return
         try:
-            self.iconbitmap(icon_path)
+            window.iconbitmap(icon_path)
         except Exception:
             try:
-                image = tk.PhotoImage(file=icon_path)
-                self.iconphoto(True, image)
+                image = tk.PhotoImage(master=window, file=icon_path)
+                window.iconphoto(True, image)
             except Exception:
                 pass
 
@@ -635,6 +651,7 @@ class RaGPboBuilderApp(tk.Tk):
         self.about_button = self._make_header_button(right, "About", self.open_about_window)
         self.licence_button = self._make_header_button(right, "Licence", self.open_licence_window)
         self.options_button = self._make_header_button(right, "Options", self.open_options_window)
+        self.local_server_button = self._make_header_button(right, "Local Server", self.open_local_server_window, colors=("#295879", "#376b90"))
         self.update_check_button = self._make_update_header_button(right, "Check for Update", lambda: launch_updater(self, APP_TITLE))
 
         profiles = ttk.Frame(outer, style="Card.TFrame", padding=(12, 8))
@@ -682,7 +699,7 @@ class RaGPboBuilderApp(tk.Tk):
         self._add_checkbutton(options, "CPP to BIN", self.convert_config_var, 0, 2, "Convert root and nested config.cpp files to config.bin in staging before packing.")
         self._add_checkbutton(options, "Sign PBOs", self.sign_pbos_var, 0, 3, "Sign built PBOs with DSSignFile.exe and your .biprivatekey.")
         self._add_checkbutton(options, "Update PAA", self.update_paa_from_sources_var, 0, 4, "Use ImageToPAA.exe to update missing or stale staged .paa files from newer .png/.tga source textures. Source files are not overwritten.")
-        self._add_checkbutton(options, "Start local server", self.start_server_after_build_var, 0, 5, "Start the configured local server launcher only after the full build or preset batch succeeds.")
+        self._add_checkbutton(options, "Test after build", self.start_server_after_build_var, 0, 5, "Start the local DayZ session after a successful build. Configure it under Local Server.")
         self._add_checkbutton(options, "PBO shadowing", self.fs_shadowing_var, 1, 4, "Add fsShadowing=1 to each built PBO header. DayZ 1.30+ then loads the PBO even if another PBO uses the same virtual prefix, allowing Enfusion resource variants (such as .layout files) to override matching files. Enable only for intentional same-prefix overrides; leave off for normal mods.")
         ttk.Label(options, text="Safety", style="FieldMuted.TLabel").grid(row=1, column=0, sticky="w", pady=(0, 5), padx=(0, 14))
         self._add_checkbutton(options, "Force rebuild", self.force_rebuild_var, 1, 1, "Ignore the build cache, refresh selected addon temp folders, and rebuild all selected addons.")
@@ -766,10 +783,12 @@ class RaGPboBuilderApp(tk.Tk):
         self.version_footer = tk.Label(self, text=f"v{APP_VERSION}", bg=GRAPHITE_BG, fg=GRAPHITE_MUTED, font=("Segoe UI", 9))
         self.version_footer.place(relx=1.0, rely=1.0, anchor="se", x=-10, y=-6)
 
-    def _make_header_button(self, parent, text, command):
-        button = tk.Button(parent, text=text, command=command, bg=GRAPHITE_CARD_SOFT, fg=GRAPHITE_TEXT, activebackground=GRAPHITE_BORDER, activeforeground=GRAPHITE_TEXT, relief="flat", borderwidth=0, padx=12, pady=6, font=("Segoe UI", 9), cursor="hand2")
+    def _make_header_button(self, parent, text, command, colors=None):
+        bg, hover = colors or (GRAPHITE_CARD_SOFT, GRAPHITE_BORDER)
+        fg = "#ffffff" if colors else GRAPHITE_TEXT
+        button = tk.Button(parent, text=text, command=command, bg=bg, fg=fg, activebackground=hover, activeforeground=fg, relief="flat", borderwidth=0, padx=12, pady=6, font=("Segoe UI", 9), cursor="hand2")
         button.pack(side="right", padx=(0, 8) if text != "About" else 0)
-        self._attach_button_hover(button, GRAPHITE_CARD_SOFT, GRAPHITE_BORDER, GRAPHITE_BORDER)
+        self._attach_button_hover(button, bg, hover)
         return button
 
     def _make_update_header_button(self, parent, text, command):
@@ -1490,12 +1509,12 @@ class RaGPboBuilderApp(tk.Tk):
         self._add_file_row(
             post_build_frame,
             0,
-            "Server launcher",
+            "Custom server launcher",
             self.server_launcher_var,
             self.choose_server_launcher,
             "Local .bat, .cmd, or .exe launcher. Starts in its own folder with a new console after successful builds.",
         )
-        ttk.Label(post_build_frame, text="Enable Start local server from main window Build options.", foreground=GRAPHITE_MUTED).grid(row=1, column=1, columnspan=2, sticky="w", padx=(8, 0), pady=(0, 4))
+        ttk.Label(post_build_frame, text="Choose Custom launcher in Local Server to use this file.", foreground=GRAPHITE_MUTED).grid(row=1, column=1, columnspan=2, sticky="w", padx=(8, 0), pady=(0, 4))
 
         mod_package_frame = ttk.LabelFrame(container, text="Mod package", padding=14)
         mod_package_frame.pack(fill="x", pady=(12, 0))
@@ -1797,6 +1816,7 @@ class RaGPboBuilderApp(tk.Tk):
             "dssignfile_exe": self.dssignfile_exe_var.get().strip(),
             "private_key": self.private_key_var.get().strip(),
             "server_launcher": self.server_launcher_var.get().strip(),
+            "local_server": self.local_server_settings,
             "project_root": self.project_root_var.get().strip(),
             "temp_dir": self.temp_dir_var.get().strip(),
             "binarize_addon_folders": self.binarize_addon_folders_var.get().strip(),
@@ -2004,10 +2024,10 @@ class RaGPboBuilderApp(tk.Tk):
                 raise BuildError("Select a .biprivatekey file or disable Sign PBOs.")
             if not os.path.isfile(key):
                 raise BuildError(f"Private key does not exist: {key}")
-        if self.start_server_after_build_var.get():
+        if self.start_server_after_build_var.get() and self.local_server_settings["mode"] == "custom":
             launcher = self.server_launcher_var.get().strip()
             if not launcher:
-                raise BuildError("Select a local server launcher or disable Start local server.")
+                raise BuildError("Select a custom server launcher in Options or choose Built-in DayZ Diag in Local Server.")
             if not os.path.isfile(launcher):
                 raise BuildError(f"Local server launcher does not exist: {launcher}")
             if Path(launcher).suffix.lower() not in {".bat", ".cmd", ".exe"}:
@@ -2047,6 +2067,7 @@ class RaGPboBuilderApp(tk.Tk):
             "dssignfile_exe": self.dssignfile_exe_var.get().strip(),
             "private_key": self.private_key_var.get().strip(),
             "server_launcher": self.server_launcher_var.get().strip(),
+            "local_server": dict(self.local_server_settings),
             "project_root": self.project_root_var.get().strip() or DEFAULT_PROJECT_ROOT,
             "temp_dir": self.temp_dir_var.get().strip() or DEFAULT_TEMP_DIR,
             "binarize_addon_folders": self.binarize_addon_folders_var.get().strip(),
@@ -2078,11 +2099,16 @@ class RaGPboBuilderApp(tk.Tk):
     def launch_local_server(self, build_result):
         if not build_result.get("start_server_after_build"):
             return False, ""
+        settings = build_result.get("local_server") or self.local_server_settings
+        if settings.get("mode") != "custom":
+            error = self.start_managed_server(settings, build_result.get("output_root_dir", ""), auto_join=True, manual=False)
+            return not error, error
         launcher = str(build_result.get("server_launcher", "")).strip()
         if not launcher:
             error = "Select a local server launcher under Options > Post-build."
             self.log(f"ERROR: {error}")
             return False, error
+
         if not os.path.isfile(launcher):
             error = f"Local server launcher does not exist: {launcher}"
             self.log(f"ERROR: {error}")
@@ -2109,6 +2135,133 @@ class RaGPboBuilderApp(tk.Tk):
             error = f"Could not start local server launcher: {e}"
             self.log(f"ERROR: {error}")
             return False, error
+
+    def open_local_server_window(self):
+        if self.local_server_window is not None and self.local_server_window.winfo_exists():
+            self.local_server_window.lift()
+            return
+        self.local_server_window = LocalServerWindow(self)
+
+    def start_managed_server(self, settings, build_output, auto_join, manual=True):
+        if self.local_server_busy or (self.local_server_session and self.local_server_session.running()):
+            error = "A managed DayZ session is already running. Stop it in Local Server before starting another."
+            if manual:
+                messagebox.showwarning(APP_TITLE, error, parent=self)
+            return error
+
+        self.local_server_busy = True
+        self.local_server_status.set("Preparing local server…")
+
+        def worker():
+            try:
+                options = dict(settings)
+                if not options.get("game"):
+                    installs = find_diag_installs()
+                    if installs:
+                        options["game"] = installs[0]
+                plan = plan_local_server(options, build_output, self.local_server_root)
+                session = LocalServerSession(plan, auto_join)
+                session.start()
+                self.local_server_events.put(("started", session))
+            except Exception as error:
+                self.local_server_events.put(("error", str(error)))
+
+        threading.Thread(target=worker, name="rag_local_server", daemon=True).start()
+        return ""
+
+    def download_local_mission(self, map_name, window):
+        if self.local_mission_downloading:
+            window.download_finished(None, "A stock mission download is already running.")
+            return
+        self.local_mission_downloading = True
+
+        def worker():
+            def progress(current, total, name):
+                self.local_server_events.put(("download_progress", (window, current, total, name)))
+            try:
+                path = download_stock_mission(map_name, self.local_server_root / "missions", progress)
+                self.local_server_events.put(("download_done", (window, path, "")))
+            except Exception as error:
+                self.local_server_events.put(("download_done", (window, None, str(error))))
+
+        threading.Thread(target=worker, name="rag_mission_download", daemon=True).start()
+
+    def poll_managed_server(self):
+        while True:
+            try:
+                kind, payload = self.local_server_events.get_nowait()
+            except queue.Empty:
+                break
+            if kind == "started":
+                self.local_server_busy = False
+                self.local_server_session = payload
+                self.local_server_status.set(f"DayZ Diag starting on port {payload.plan.port}…")
+                self.log(f"Local server profiles: {payload.plan.server_profile}")
+                if payload.plan.mods:
+                    self.log("Local server mods: " + ", ".join(path.name for path in payload.plan.mods))
+            elif kind == "error":
+                self.local_server_busy = False
+                self.local_server_status.set(f"Local server could not start: {payload}")
+                self.log(f"ERROR: Local server could not start: {payload}")
+                messagebox.showerror(APP_TITLE, payload, parent=self)
+            elif kind == "download_progress":
+                window, current, total, name = payload
+                if window.winfo_exists():
+                    window.download_progress(current, total, name)
+            elif kind == "download_done":
+                self.local_mission_downloading = False
+                window, path, error = payload
+                if window.winfo_exists():
+                    window.download_finished(path, error)
+                elif error:
+                    self.log(f"ERROR: Stock mission download failed: {error}")
+                else:
+                    self.log(f"Stock mission ready: {path}")
+
+        session = self.local_server_session
+        if session is not None:
+            if session.server.poll() is not None:
+                session.auto_join = False
+                if session.stopping:
+                    self.local_server_status.set("Local server stopped")
+                else:
+                    self.local_server_status.set(f"Server exited ({session.server.returncode}). See Open Server Files.")
+            elif not session.ready and session.check_ready():
+                self.local_server_status.set(f"Server ready at 127.0.0.1:{session.plan.port}")
+                if session.auto_join:
+                    session.auto_join = False
+                    self.join_managed_server()
+            elif session.client is not None and session.client.poll() is not None:
+                session.client = None
+                self.local_server_status.set(f"DayZ client closed. Server ready at 127.0.0.1:{session.plan.port}")
+            elif session.auto_join and time.monotonic() > session.deadline:
+                session.auto_join = False
+                self.local_server_status.set("Server is still starting. Check its logs, then use Join.")
+        if self.local_server_window is not None and self.local_server_window.winfo_exists():
+            self.local_server_window.update_session_state()
+        self.after(500, self.poll_managed_server)
+
+    def join_managed_server(self):
+        try:
+            if self.local_server_session is None:
+                raise BuildError("Start a local server first.")
+            self.local_server_session.join()
+            self.local_server_status.set(f"DayZ client started for 127.0.0.1:{self.local_server_session.plan.port}")
+        except (BuildError, OSError) as error:
+            messagebox.showerror(APP_TITLE, str(error), parent=self)
+
+    def stop_managed_server(self):
+        session = self.local_server_session
+        if self.local_server_busy:
+            self.local_server_status.set("Wait until server startup completes before stopping.")
+        elif session is not None and session.running():
+            session.stop()
+            self.local_server_status.set("Stopping local server and client…")
+
+    def open_managed_server_files(self):
+        root = self.local_server_session.plan.root if self.local_server_session else self.local_server_root
+        root.mkdir(parents=True, exist_ok=True)
+        self.open_folder_in_explorer(str(root), "No local server folder selected.", "Local server folder does not exist.")
 
     def persist_mod_package_result(self, build_result):
         version = str(build_result.get("mod_package_version", "")).strip()
@@ -2201,6 +2354,8 @@ class RaGPboBuilderApp(tk.Tk):
             summary = build_all(settings, self.thread_log, self.thread_progress, self.cancel_event.is_set)
             summary["start_server_after_build"] = bool(settings.get("start_server_after_build", False))
             summary["server_launcher"] = settings.get("server_launcher", "")
+            summary["local_server"] = settings.get("local_server", {})
+            summary["output_root_dir"] = settings["output_root_dir"]
             self.log_queue.put(("done", summary))
         except BuildCancelled as e:
             self.log_queue.put(("cancelled", str(e)))
@@ -2321,6 +2476,8 @@ class RaGPboBuilderApp(tk.Tk):
             "totals": totals,
             "start_server_after_build": bool(post_build_settings.get("start_server_after_build", False)),
             "server_launcher": post_build_settings.get("server_launcher", ""),
+            "local_server": post_build_settings.get("local_server", {}),
+            "output_root_dir": post_build_settings.get("output_root_dir", ""),
             **mod_package_result,
         }))
 
@@ -2523,6 +2680,12 @@ class RaGPboBuilderApp(tk.Tk):
                     batch.append(payload)
                     continue
                 flush()
+                if self.closing_after_build and item_type in {"cancelled", "batch_done", "done", "preflight_done", "error"}:
+                    self.is_building = False
+                    if item_type == "error":
+                        self.log(f"ERROR: {payload}")
+                        messagebox.showerror(APP_TITLE, payload, parent=self)
+                    continue
                 if item_type == "progress":
                     current, total = payload
                     maximum = max(total, 1)
@@ -2568,7 +2731,7 @@ class RaGPboBuilderApp(tk.Tk):
                             messagebox.showwarning(APP_TITLE, message + "\n\n" + launch_error)
                         else:
                             self.set_status("Batch build finished", "success")
-                            messagebox.showinfo(APP_TITLE, message + ("\n\nLocal server launcher started." if launched else ""))
+                            messagebox.showinfo(APP_TITLE, message + ("\n\nLocal server launch requested." if launched else ""))
                 elif item_type == "done":
                     self.is_building = False
                     self.build_button.configure(state="normal")
@@ -2584,7 +2747,7 @@ class RaGPboBuilderApp(tk.Tk):
                         messagebox.showwarning(APP_TITLE, "Build finished, but server did not start.\n\n" + launch_error)
                     else:
                         self.set_status("Build finished", "success")
-                        messagebox.showinfo(APP_TITLE, "Build finished." + ("\n\nLocal server launcher started." if launched else ""))
+                        messagebox.showinfo(APP_TITLE, "Build finished." + ("\n\nLocal server launch requested." if launched else ""))
                 elif item_type == "preflight_done":
                     self.is_building = False
                     self.build_button.configure(state="normal")
@@ -2670,6 +2833,22 @@ class RaGPboBuilderApp(tk.Tk):
             save_saved_settings(self.saved_settings)
 
     def on_close(self):
+        if self.is_building or (self.worker_thread and self.worker_thread.is_alive()):
+            if not self.closing_after_build:
+                self.closing_after_build = True
+                self.cancel_event.set()
+                self.set_status("Closing after the current operation finishes…", "building")
+                self.after(150, self.wait_for_build_shutdown)
+            return
+        if self.local_server_busy:
+            messagebox.showinfo(APP_TITLE, "Wait for local server preparation to finish before closing.", parent=self)
+            return
+        if self.local_server_session and self.local_server_session.running():
+            answer = messagebox.askyesnocancel(APP_TITLE, "Stop the managed DayZ session before closing Builder?\n\nChoose No to leave it running.", parent=self)
+            if answer is None:
+                return
+            if answer:
+                self.local_server_session.stop()
         try:
             self.save_window_geometry()
             self.save_path_settings()
@@ -2677,6 +2856,13 @@ class RaGPboBuilderApp(tk.Tk):
             pass
         self.close_current_log_file()
         self.destroy()
+
+    def wait_for_build_shutdown(self):
+        if self.worker_thread and self.worker_thread.is_alive():
+            self.after(150, self.wait_for_build_shutdown)
+        else:
+            self.is_building = False
+            self.on_close()
 
     def close_current_log_file(self):
         if self.current_log_file:

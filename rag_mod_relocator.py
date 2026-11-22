@@ -9,7 +9,7 @@ from tkinter import filedialog, messagebox, ttk
 
 from rag_builder_storage import get_app_data_dir, load_json_file, resource_path, save_json_file
 from rag_licence import make_licence_button
-from rag_relocator_core import apply_scan, copy_and_apply_scan, find_path_candidates, normalize_virtual_path, scan_references
+from rag_relocator_core import RelocationCancelled, apply_scan, copy_and_apply_scan, find_path_candidates, normalize_virtual_path, restore_backup, scan_references
 from rag_updater_launcher import launch_updater
 from rag_version import APP_VERSION
 
@@ -110,6 +110,8 @@ class RaGModRelocatorApp(tk.Tk):
         self.scan_result = None
         self.worker_queue = queue.Queue()
         self.worker_running = False
+        self.cancel_event = threading.Event()
+        self.closing = False
         self.last_backup_path = None
         self.selected_destination_folder = ""
         self.selected_destination_virtual = ""
@@ -310,6 +312,9 @@ class RaGModRelocatorApp(tk.Tk):
         self.apply_button.configure(state="disabled")
         self.backup_button = self.make_button(actions, "Open Backup Folder", self.open_backup_folder, tooltip="Open folder containing latest relocation ZIP backup.")
         self.backup_button.configure(state="disabled")
+        self.restore_button = self.make_button(actions, "Restore Backup", self.start_restore)
+        self.cancel_button = self.make_button(actions, "Cancel", self.cancel_operation)
+        self.cancel_button.configure(state="disabled")
         ttk.Label(actions, textvariable=self.summary_var, foreground=GRAPHITE_MUTED).pack(side="left", padx=(8, 0), pady=8)
         self.progress_bar = ttk.Progressbar(actions, mode="indeterminate", length=150)
         self.progress_bar.pack(side="right", padx=(8, 0), pady=8)
@@ -431,7 +436,9 @@ class RaGModRelocatorApp(tk.Tk):
         def worker():
             try:
                 progress = lambda count, path: self.worker_queue.put(("progress_detect", (count, path)))
-                self.worker_queue.put(("detect_done", find_path_candidates(source, limit=10, progress=progress)))
+                self.worker_queue.put(("detect_done", find_path_candidates(source, limit=10, progress=progress, cancel_event=self.cancel_event)))
+            except RelocationCancelled:
+                self.worker_queue.put(("cancelled", None))
             except Exception as error:
                 self.worker_queue.put(("error", str(error)))
 
@@ -440,11 +447,14 @@ class RaGModRelocatorApp(tk.Tk):
 
     def set_busy(self, busy):
         self.worker_running = busy
+        self.restore_button.configure(state="disabled" if busy else "normal")
+        self.cancel_button.configure(state="normal" if busy else "disabled")
         self.scan_button.configure(state="disabled" if busy else "normal")
         can_apply = self.scan_result and (self.scan_result.changes or self.copy_to_new_folder_var.get())
         self.apply_button.configure(state="disabled" if busy or not can_apply else "normal")
         self.configure(cursor="wait" if busy else "")
         if busy:
+            self.cancel_event.clear()
             self.progress_bar.start(12)
         else:
             self.progress_bar.stop()
@@ -465,7 +475,9 @@ class RaGModRelocatorApp(tk.Tk):
         def worker():
             try:
                 progress = lambda count, path: self.worker_queue.put(("progress", (count, path)))
-                self.worker_queue.put(("scan_done", scan_references(source, old_path, new_path, include_binary, include_pbo, progress)))
+                self.worker_queue.put(("scan_done", scan_references(source, old_path, new_path, include_binary, include_pbo, progress, self.cancel_event)))
+            except RelocationCancelled:
+                self.worker_queue.put(("cancelled", None))
             except Exception as error:
                 self.worker_queue.put(("error", str(error)))
 
@@ -511,10 +523,38 @@ class RaGModRelocatorApp(tk.Tk):
             try:
                 if copy_mode:
                     progress = lambda message: self.worker_queue.put(("progress_copy", message))
-                    applied = copy_and_apply_scan(result, destination, progress)
+                    applied = copy_and_apply_scan(result, destination, progress, self.cancel_event)
                 else:
-                    applied = apply_scan(result, create_backup)
+                    applied = apply_scan(result, create_backup, self.cancel_event)
                 self.worker_queue.put(("apply_done", applied))
+            except RelocationCancelled:
+                self.worker_queue.put(("cancelled", None))
+            except Exception as error:
+                self.worker_queue.put(("error", str(error)))
+
+        threading.Thread(target=worker, daemon=True).start()
+        self.after(100, self.poll_worker)
+
+    def cancel_operation(self):
+        self.cancel_event.set()
+        self.cancel_button.configure(state="disabled")
+        self.status_var.set("Cancelling and restoring any partial changes…")
+
+    def start_restore(self):
+        source = self.source_var.get().strip()
+        if self.worker_running or not os.path.isdir(source):
+            return
+        backup = filedialog.askopenfilename(parent=self, title="Select relocation backup", filetypes=[("ZIP backups", "*.zip")])
+        if not backup or not messagebox.askyesno(APP_TITLE, "Restore original files into the selected source? The current files will be backed up first.", parent=self):
+            return
+        self.set_busy(True)
+        self.status_var.set("Restoring backup…")
+
+        def worker():
+            try:
+                self.worker_queue.put(("restore_done", restore_backup(source, backup, self.cancel_event)))
+            except RelocationCancelled:
+                self.worker_queue.put(("cancelled", None))
             except Exception as error:
                 self.worker_queue.put(("error", str(error)))
 
@@ -538,6 +578,21 @@ class RaGModRelocatorApp(tk.Tk):
                 continue
             break
         self.set_busy(False)
+        if self.closing:
+            if result_type == "error":
+                messagebox.showerror(APP_TITLE, payload, parent=self)
+            self.on_close()
+            return
+        if result_type == "cancelled":
+            self.status_var.set("Operation cancelled.")
+            return
+        if result_type == "restore_done":
+            self.clear_preview()
+            if payload.backup_path:
+                self.last_backup_path = payload.backup_path
+                self.backup_button.configure(state="normal")
+            self.status_var.set(f"Restored {payload.changed_files} file(s).")
+            return
         if result_type == "error":
             self.summary_var.set("Operation failed")
             self.status_var.set(payload)
@@ -644,7 +699,9 @@ class RaGModRelocatorApp(tk.Tk):
         })
 
     def on_close(self):
-        if self.worker_running and not messagebox.askyesno(APP_TITLE, "Operation still running. Close anyway?", parent=self):
+        if self.worker_running:
+            self.closing = True
+            self.cancel_operation()
             return
         try:
             self.save_settings()

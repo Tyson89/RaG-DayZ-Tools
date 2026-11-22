@@ -125,7 +125,7 @@ def get_initial_directory(value):
 
 
 def report_signature(report):
-    files = tuple((entry.relative_path.casefold(), entry.size, entry.modified_ns) for entry in report.files)
+    files = tuple((entry.relative_path.casefold(), entry.size, entry.modified_ns, entry.sha256) for entry in report.files)
     excluded = tuple((entry.relative_path.casefold(), entry.size, entry.modified_ns, entry.detail) for entry in report.excluded)
     return files, excluded
 

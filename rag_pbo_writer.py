@@ -40,7 +40,8 @@ def pack_pbo(source_dir, output_path, prefix, log, extra_patterns=None, properti
                 log(f"WARNING: Skipped external file while packing because it is on a different drive than the pack source: {full}")
                 continue
             rel = rel.replace(os.sep, WIN_SEP)
-            files.append({"name": rel, "path": full, "data": None, "size": os.path.getsize(full)})
+            details = os.stat(full)
+            files.append({"name": rel, "path": full, "data": None, "size": details.st_size, "mtime": details.st_mtime_ns, "inode": details.st_ino})
 
     if prefix:
         normalized_prefix = prefix.replace("/", WIN_SEP).strip(WIN_SEP)
@@ -89,6 +90,10 @@ def pack_pbo(source_dir, output_path, prefix, log, extra_patterns=None, properti
                     continue
 
                 with open(entry["path"], "rb") as file:
+                    before = os.fstat(file.fileno())
+                    if (before.st_size, before.st_mtime_ns, before.st_ino) != (entry["size"], entry["mtime"], entry["inode"]):
+                        raise BuildError(f"Source changed while packing: {entry['path']}")
+                    written = 0
                     while True:
                         chunk = file.read(COPY_CHUNK_SIZE)
                         if not chunk:
@@ -96,6 +101,10 @@ def pack_pbo(source_dir, output_path, prefix, log, extra_patterns=None, properti
                         out.write(chunk)
                         sha.update(chunk)
                         total += len(chunk)
+                        written += len(chunk)
+                    after = os.stat(entry["path"])
+                    if written != entry["size"] or (after.st_size, after.st_mtime_ns, after.st_ino) != (before.st_size, before.st_mtime_ns, before.st_ino):
+                        raise BuildError(f"Source changed while packing: {entry['path']}")
             out.write(ZERO)
             out.write(sha.digest())
             total += 21
@@ -141,7 +150,23 @@ def verify_packed_pbo(pbo_path, expected_prefix, log, expected_properties=None):
     if size <= 0:
         raise BuildError(f"Post-pack verification failed. PBO is empty: {pbo_path}")
 
-    properties = read_pbo_archive(pbo_path)["properties"]
+    archive = read_pbo_archive(pbo_path)
+    if archive["footer_size"] != 21:
+        raise BuildError(f"Post-pack verification failed. PBO payload length does not match its header: {pbo_path}")
+    with open(pbo_path, "rb") as file:
+        digest = hashlib.sha1()
+        remaining = archive["payload_end"]
+        while remaining:
+            chunk = file.read(min(COPY_CHUNK_SIZE, remaining))
+            if not chunk:
+                raise BuildError(f"Post-pack verification failed. PBO payload ended early: {pbo_path}")
+            digest.update(chunk)
+            remaining -= len(chunk)
+        footer = file.read(22)
+        if footer != ZERO + digest.digest():
+            raise BuildError(f"Post-pack verification failed. PBO checksum mismatch: {pbo_path}")
+        digest.update(footer)
+    properties = archive["properties"]
     packed_prefix = properties.get("prefix", "")
 
     if expected_prefix and packed_prefix and packed_prefix != expected_prefix:
@@ -153,6 +178,7 @@ def verify_packed_pbo(pbo_path, expected_prefix, log, expected_properties=None):
         if properties.get(key) != str(expected):
             raise BuildError(f"Post-pack verification failed. PBO property {key} mismatch.")
     log(f"Post-pack verification OK: size={size:,} bytes, prefix={packed_prefix or '<none>'}")
+    return digest.hexdigest()
 
 
 def pbo_entry_bytes_match_file(pbo_path, entry, source_file):

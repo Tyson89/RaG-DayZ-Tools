@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import re
@@ -48,6 +49,7 @@ class ManifestEntry:
     kind: str
     detail: str = ""
     modified_ns: int = 0
+    sha256: str = ""
 
 
 @dataclass(frozen=True)
@@ -247,7 +249,17 @@ def scan_mod_folder(source_folder, progress=None):
                 if path.name.casefold().endswith(".biprivatekey"):
                     private_keys += 1
                 continue
-            entry = ManifestEntry(relative_path, size, _classify_file(path), modified_ns=modified_ns)
+            try:
+                with path.open("rb") as file:
+                    digest = hashlib.file_digest(file, "sha256").hexdigest()
+                after = path.stat()
+                if (after.st_size, after.st_mtime_ns) != (size, modified_ns):
+                    raise OSError("File changed during preflight.")
+            except OSError:
+                unreadable += 1
+                report.excluded.append(ManifestEntry(relative_path, size, "Excluded", "Unreadable or changed during preflight", modified_ns))
+                continue
+            entry = ManifestEntry(relative_path, size, _classify_file(path), modified_ns=modified_ns, sha256=digest)
             report.files.append(entry)
             report.total_bytes += size
 
@@ -292,8 +304,16 @@ def _copy_manifest(report, destination, progress=None):
     for index, entry in enumerate(report.files, 1):
         source_path = source.joinpath(*entry.relative_path.split("\\"))
         destination_path = destination.joinpath(*entry.relative_path.split("\\"))
+        if not source_path.resolve().is_relative_to(source.resolve()) or any(
+            _is_reparse_point(path) for path in (source_path, *source_path.parents) if path != source and source in path.parents
+        ):
+            raise ValueError(f"File became linked after preflight. Run preflight again: {entry.relative_path}")
         destination_path.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source_path, destination_path)
+        with destination_path.open("rb") as file:
+            digest = hashlib.file_digest(file, "sha256").hexdigest()
+        if destination_path.stat().st_size != entry.size or digest != entry.sha256:
+            raise ValueError(f"File changed after preflight. Run preflight again: {entry.relative_path}")
         if progress and (index == 1 or index % 10 == 0 or index == len(report.files)):
             progress(f"Staging {index}/{len(report.files)}: {entry.relative_path}")
 
@@ -518,7 +538,7 @@ def validate_publish_request(request):
 def _save_publish_log(directory, workshop_id, output):
     log_directory = Path(directory)
     log_directory.mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     path = log_directory / f"publisher_{workshop_id}_{timestamp}.log"
     path.write_text(output, encoding="utf-8", errors="replace")
     return path
@@ -541,9 +561,17 @@ def publish_workshop_item(
 
     if progress:
         progress("Creating safe upload staging folder...")
-    prepared = prepare_upload(report, progress)
+    prepared = None
     log_path = None
+    transcript = []
+
+    def log_line(line):
+        transcript.append(str(line))
+        if output_callback:
+            output_callback(line)
+
     try:
+        prepared = prepare_upload(report, progress)
         backend = backend or SteamworksBackend()
         payload = {
             "command": "update_item",
@@ -575,9 +603,14 @@ def publish_workshop_item(
             progress("Submitting through signed-in desktop Steam account...")
         if output_callback:
             output_callback(f"Validated staged content path: {prepared.content_folder.resolve()}")
-        terminal, output = backend.update_item(payload, event_callback=handle_event, log_callback=output_callback)
+        terminal, output = backend.update_item(payload, event_callback=handle_event, log_callback=log_line)
+        if terminal.get("event") != "completed":
+            raise SteamBridgeError("PUBLISH_INCOMPLETE", "Steam did not confirm the Workshop update.", terminal)
         if request.log_directory:
-            log_path = _save_publish_log(request.log_directory, item_id, output)
+            try:
+                log_path = _save_publish_log(request.log_directory, item_id, output)
+            except OSError as error:
+                log_line(f"Workshop update completed. Could not save publish log: {error}")
         return PublishResult(
             success=terminal.get("event") == "completed",
             message="Workshop update completed successfully.",
@@ -586,5 +619,16 @@ def publish_workshop_item(
             output=output,
             log_path=log_path,
         )
+    except Exception as error:
+        if request.log_directory:
+            try:
+                path = _save_publish_log(request.log_directory, item_id, "\n".join([*transcript, f"ERROR: {error}"]))
+                error.add_note(f"Publish failure log: {path}")
+                if output_callback:
+                    output_callback(f"Publish failure log: {path}")
+            except OSError as log_error:
+                error.add_note(f"Could not save publish failure log: {log_error}")
+        raise
     finally:
-        prepared.cleanup()
+        if prepared:
+            prepared.cleanup()

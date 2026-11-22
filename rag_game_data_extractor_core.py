@@ -1,3 +1,5 @@
+import hashlib
+import json
 import os
 import re
 import shutil
@@ -8,11 +10,12 @@ import time
 import urllib.request
 import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from pbo_core import (
     COPY_CHUNK_SIZE,
+    PboError,
     get_pbo_entry_unpacked_size,
     get_safe_pbo_extract_path,
     is_pbo_entry_supported,
@@ -110,6 +113,9 @@ class ExtractionPlan:
     unsupported_entries: list = field(default_factory=list)
     filtered_entries: int = 0
     conflicts: list = field(default_factory=list)
+    scripts_only: bool = False
+    partial: bool = False
+    source_signature: tuple = ()
 
     @property
     def total_bytes(self):
@@ -348,14 +354,39 @@ def _normalize_relative_path(prefix, entry_name, create_dayz_script_folder=False
     return "\\".join(parts)
 
 
-def build_extraction_plan(game_root, include_extensions="", exclude_extensions="", progress=None, create_dayz_script_folder=False):
+def get_source_signature(game_root):
+    paths, protected = discover_game_archives(game_root)
+    return tuple(
+        (str(path.relative_to(game_root)).casefold(), path.stat().st_size, path.stat().st_mtime_ns)
+        for path in sorted([path for path, _priority in paths] + protected)
+    )
+
+
+def is_plan_current(plan):
+    try:
+        if plan.source_signature and get_source_signature(plan.game_root) != plan.source_signature:
+            return False
+        return all(
+            source.path.stat().st_size == source.size and source.path.stat().st_mtime_ns == source.mtime_ns
+            for source in plan.archives
+        )
+    except (OSError, GameDataExtractorError):
+        return False
+
+
+def build_extraction_plan(game_root, include_extensions="", exclude_extensions="", progress=None, create_dayz_script_folder=False, selected_archives=None, selected_folders=None):
     root = Path(game_root).resolve()
     include = parse_extension_list(include_extensions)
     exclude = parse_extension_list(exclude_extensions)
     pbo_paths, protected = discover_game_archives(root)
+    source_signature = get_source_signature(root)
+    archive_filter = {value.replace("/", "\\").casefold() for value in selected_archives} if selected_archives is not None else None
+    folder_filter = [value.replace("/", "\\").strip("\\").casefold() for value in selected_folders] if selected_folders is not None else None
     sources = []
 
     for index, (pbo_path, priority) in enumerate(pbo_paths, 1):
+        if archive_filter is not None and str(pbo_path.relative_to(root)).replace("/", "\\").casefold() not in archive_filter:
+            continue
         if progress:
             progress({
                 "type": "scan",
@@ -401,6 +432,9 @@ def build_extraction_plan(game_root, include_extensions="", exclude_extensions="
     selected_sources.extend(sorted(overlays, key=lambda item: (item.priority, item.relative_path.casefold())))
     plan = ExtractionPlan(
         game_root=root,
+        scripts_only=include == {".c"} and archive_filter is None and folder_filter is None,
+        partial=bool(include or exclude or archive_filter is not None or folder_filter is not None),
+        source_signature=source_signature,
         archives=selected_sources,
         protected_archives=[str(path.relative_to(root)).replace("/", "\\") for path in protected],
         shadowed_archives=shadowed,
@@ -425,6 +459,9 @@ def build_extraction_plan(game_root, include_extensions="", exclude_extensions="
 
             relative_path = _normalize_relative_path(source.prefix, entry.name, create_dayz_script_folder)
             key = relative_path.casefold()
+            if folder_filter is not None and not any(key.startswith(folder + "\\") for folder in folder_filter):
+                plan.filtered_entries += 1
+                continue
             item = PlannedEntry(source, entry, relative_path)
             previous = claims.get(key)
 
@@ -477,8 +514,8 @@ def _extract_entry(source_file, item, output_root):
         raise
 
 
-def _download_dayz_misc(cancel_event, progress):
-    fd, archive_name = tempfile.mkstemp(prefix="rag_dayz_misc_", suffix=".zip")
+def _download_dayz_misc(cancel_event, progress, temp_dir=None):
+    fd, archive_name = tempfile.mkstemp(prefix="rag_dayz_misc_", suffix=".zip", dir=temp_dir)
     os.close(fd)
     archive_path = Path(archive_name)
     request = urllib.request.Request(
@@ -616,13 +653,15 @@ def has_conversion_candidates(plan):
     )
 
 
-def _clean_base_game_folders(plan, output_root, include_dayz_misc, cancel_event, progress):
+def _get_cleanup_targets(plan, output_root):
     roots = {
         re.split(r"[\\/]+", item.relative_path)[0].casefold()
         for item in plan.entries
     } & DAYZ_BASE_GAME_FOLDERS
-    if include_dayz_misc:
-        roots.add("dz")
+    if plan.scripts_only:
+        roots &= {"scripts"}
+    elif plan.partial:
+        roots.clear()
 
     targets = sorted(
         (path for path in output_root.iterdir() if path.name.casefold() in roots),
@@ -640,18 +679,61 @@ def _clean_base_game_folders(plan, output_root, include_dayz_misc, cancel_event,
         if any(path == resolved or resolved in path.parents for path in protected):
             raise GameDataExtractorError(f"Refusing to clean a folder containing DayZ source data: {target}")
 
-    cleaned = []
-    for target in targets:
-        if cancel_event.is_set():
-            raise ExtractionCancelled("Extraction cancelled.")
-        if progress:
-            progress({"type": "cleanup", "message": f"Removing existing base-game folder: {target.name}"})
-        if cancel_event.is_set():
-            raise ExtractionCancelled("Extraction cancelled.")
-        shutil.rmtree(target)
-        cleaned.append(target.name)
+    return targets
 
-    return cleaned
+
+def get_cleanup_preview(plan, output_root, clean_base_game_folders=True, incremental=False, cancel_event=None):
+    output_root = Path(output_root).resolve()
+    if not clean_base_game_folders or incremental or not output_root.is_dir():
+        return []
+    preview = []
+    for target in _get_cleanup_targets(plan, output_root):
+        files = 0
+        size = 0
+        for folder, directories, names in os.walk(target, followlinks=False):
+            if cancel_event and cancel_event.is_set():
+                raise ExtractionCancelled("Extraction cancelled.")
+            directories[:] = [name for name in directories if not (
+                (Path(folder) / name).is_symlink()
+                or getattr((Path(folder) / name).lstat(), "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT
+            )]
+            for name in names:
+                path = Path(folder) / name
+                if not path.is_symlink():
+                    files += 1
+                    size += path.stat().st_size
+        preview.append({"path": str(target), "files": files, "bytes": size})
+    return preview
+
+
+def get_required_space(plan, include_dayz_misc=False):
+    conversion_bytes = sum(
+        item.output_size for item in plan.entries
+        if is_cfgconvert_candidate_bin_path(item.relative_path) or is_rap_text_convert_candidate_path(item.relative_path)
+    )
+    return plan.total_bytes + conversion_bytes * 8 + len(plan.entries) * 4096 + 16 * 1024 * 1024 + (
+        DAYZ_MISC_MAX_DOWNLOAD_BYTES + DAYZ_MISC_MAX_UNPACKED_BYTES if include_dayz_misc else 0
+    )
+
+
+def _file_digest(path, cancel_event):
+    digest = hashlib.sha256()
+    with open(path, "rb") as source:
+        while chunk := source.read(COPY_CHUNK_SIZE):
+            if cancel_event.is_set():
+                raise ExtractionCancelled("Extraction cancelled.")
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _entry_fingerprint(item, cfgconvert_exe, include_dayz_misc=False):
+    converter = Path(cfgconvert_exe) if cfgconvert_exe else None
+    conversion = None
+    if is_cfgconvert_candidate_bin_path(item.relative_path) or is_rap_text_convert_candidate_path(item.relative_path):
+        if converter and converter.is_file():
+            details = converter.stat()
+            conversion = [str(converter.resolve()), details.st_size, details.st_mtime_ns]
+    return [str(item.archive.path), item.archive.size, item.archive.mtime_ns, item.entry.offset, item.output_size, conversion, include_dayz_misc]
 
 
 def extract_game_data(
@@ -663,6 +745,197 @@ def extract_game_data(
     cancel_event=None,
     progress=None,
     clean_base_game_folders=True,
+    incremental=False,
+):
+    started = time.monotonic()
+    output_root = Path(output_root).resolve()
+    cancel_event = cancel_event or threading.Event()
+    if output_root == plan.game_root or plan.game_root in output_root.parents:
+        raise GameDataExtractorError("Output folder cannot be inside DayZ installation.")
+    if cancel_event.is_set():
+        raise ExtractionCancelled("Extraction cancelled.")
+    if not is_plan_current(plan):
+        raise GameDataExtractorError("Source archives changed; rescan before extraction.")
+    output_root.mkdir(parents=True, exist_ok=True)
+    targets = _get_cleanup_targets(plan, output_root) if clean_base_game_folders and not incremental else []
+    records = {}
+    if incremental:
+        try:
+            manifest = json.loads((output_root / MANIFEST_NAME).read_text(encoding="utf-8"))
+            if manifest.get("version") == 1 and isinstance(manifest.get("entries"), dict):
+                records = manifest["entries"]
+        except (OSError, ValueError, AttributeError):
+            pass
+    pending = []
+    retained = records.copy()
+    if progress:
+        progress({"type": "phase", "message": "Checking existing files..."})
+    for item in plan.entries:
+        if cancel_event.is_set():
+            raise ExtractionCancelled("Extraction cancelled.")
+        key = item.relative_path.casefold()
+        record = records.get(key)
+        valid = False
+        if incremental and isinstance(record, dict) and record.get("source") == _entry_fingerprint(item, cfgconvert_exe, include_dayz_misc):
+            try:
+                outputs = record.get("outputs")
+                valid = isinstance(outputs, dict) and bool(outputs) and all(
+                    _file_digest(get_safe_pbo_extract_path(output_root, name), cancel_event) == digest
+                    for name, digest in outputs.items()
+                )
+                valid = valid and not any(get_safe_pbo_extract_path(output_root, name).exists() for name in record.get("absent", []))
+            except (OSError, ValueError, TypeError, PboError):
+                valid = False
+        if valid:
+            retained[key] = record
+        else:
+            retained.pop(key, None)
+            pending.append(item)
+    pending_plan = replace(plan, entries=pending)
+    required = get_required_space(pending_plan, include_dayz_misc)
+    free = get_free_space(output_root)
+    if free < required:
+        raise GameDataExtractorError(f"Insufficient disk space: need {required:,} bytes free for staging and conversion; available {free:,}. Existing data is retained until success.")
+    transaction = Path(tempfile.mkdtemp(prefix=".rag_extract_", dir=output_root)).resolve()
+    stage = transaction / "stage"
+    backup = transaction / "backup"
+    stage.mkdir()
+    backup.mkdir()
+    journal = []
+    created_directories = []
+    preserve_backup = False
+
+    def check_cancelled():
+        if cancel_event.is_set():
+            raise ExtractionCancelled("Extraction cancelled.")
+
+    def move(source, target):
+        os.replace(source, target)
+        journal.append((target, source))
+
+    def make_parents(path):
+        missing = []
+        while not path.exists():
+            missing.append(path)
+            path = path.parent
+        for path in reversed(missing):
+            path.mkdir()
+            created_directories.append(path)
+
+    try:
+        result = _extract_staged_game_data(
+            pending_plan, stage, workers, cfgconvert_exe, include_dayz_misc, cancel_event, progress,
+        )
+        if result["conversion_errors"]:
+            for error in result["conversion_errors"]:
+                if progress:
+                    progress({"type": "warning", "message": error})
+            raise GameDataExtractorError("Conversion failed; previous output retained. See log for all failures.\n" + "\n".join(result["conversion_errors"][:5]))
+        check_cancelled()
+        if not is_plan_current(plan):
+            raise GameDataExtractorError("Source archives changed during extraction; rescan before retrying.")
+        if incremental:
+            for item in pending:
+                path = get_safe_pbo_extract_path(stage, item.relative_path)
+                outputs = [path]
+                if is_cfgconvert_candidate_bin_path(item.relative_path):
+                    outputs.append(path.with_suffix(".cpp"))
+                hashes = {
+                    str(path.relative_to(stage)).replace("/", "\\"): _file_digest(path, cancel_event)
+                    for path in outputs if path.is_file()
+                }
+                if hashes:
+                    retained[item.relative_path.casefold()] = {
+                        "source": _entry_fingerprint(item, cfgconvert_exe, include_dayz_misc), "outputs": hashes,
+                        "absent": [item.relative_path] if not path.exists() else [],
+                    }
+            (stage / MANIFEST_NAME).write_text(json.dumps({"version": 1, "entries": retained}), encoding="utf-8")
+        staged_files = sorted(path for path in stage.rglob("*") if path.is_file())
+        for path in staged_files:
+            target = get_safe_pbo_extract_path(output_root, str(path.relative_to(stage)))
+            if target == plan.game_root or plan.game_root in target.parents:
+                raise GameDataExtractorError(f"Refusing to overwrite DayZ source data: {target}")
+        if progress:
+            progress({"type": "phase", "message": "Installing extracted data..."})
+        for target in targets:
+            check_cancelled()
+            if progress:
+                progress({"type": "cleanup", "message": f"Replacing existing base-game folder: {target.name}"})
+            check_cancelled()
+            move(target, backup / target.name)
+        for item in pending:
+            if Path(item.relative_path.replace("\\", "/")).name.casefold() == "config.bin":
+                staged = get_safe_pbo_extract_path(stage, item.relative_path)
+                target = get_safe_pbo_extract_path(output_root, item.relative_path)
+                if not staged.exists() and target.is_file():
+                    saved = backup / "removed" / Path(*item.relative_path.split("\\"))
+                    saved.parent.mkdir(parents=True, exist_ok=True)
+                    move(target, saved)
+        for path in staged_files:
+            check_cancelled()
+            relative = path.relative_to(stage)
+            target = get_safe_pbo_extract_path(output_root, str(relative))
+            if target.exists():
+                if not target.is_file():
+                    raise GameDataExtractorError(f"Output path is not a file: {target}")
+                saved = backup / "overwritten" / relative
+                saved.parent.mkdir(parents=True, exist_ok=True)
+                move(target, saved)
+            make_parents(target.parent)
+            move(path, target)
+        if not incremental and (output_root / MANIFEST_NAME).exists():
+            move(output_root / MANIFEST_NAME, backup / "old_manifest")
+        check_cancelled()
+        result.update(
+            output_root=str(output_root), cleaned_folders=[path.name for path in targets],
+            skipped_files=len(plan.entries) - len(pending), elapsed_seconds=time.monotonic() - started,
+        )
+        return result
+    except BaseException as error:
+        failures = []
+        for source, target in reversed(journal):
+            try:
+                if source.exists():
+                    if source.is_dir() and target.is_dir():
+                        for directory in reversed(created_directories):
+                            if directory == target or target in directory.parents:
+                                try:
+                                    directory.rmdir()
+                                except OSError:
+                                    pass
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    os.replace(source, target)
+            except OSError as restore_error:
+                failures.append(str(restore_error))
+        restored_roots = [target for source, target in journal if source.parent == backup]
+        for directory in reversed(created_directories):
+            if any(directory == root or root in directory.parents for root in restored_roots):
+                continue
+            try:
+                directory.rmdir()
+            except OSError:
+                pass
+        if failures:
+            preserve_backup = True
+            raise GameDataExtractorError(f"{error}. Rollback incomplete; backups retained at {backup}: {failures[0]}") from error
+        raise
+    finally:
+        if not preserve_backup and transaction.parent == output_root:
+            try:
+                shutil.rmtree(transaction)
+            except OSError as error:
+                if progress:
+                    progress({"type": "warning", "message": f"Temporary data could not be removed: {transaction}: {error}"})
+
+
+def _extract_staged_game_data(
+    plan,
+    output_root,
+    workers=None,
+    cfgconvert_exe="",
+    include_dayz_misc=False,
+    cancel_event=None,
+    progress=None,
 ):
     output_root = Path(output_root).resolve()
 
@@ -674,11 +947,6 @@ def extract_game_data(
         raise ExtractionCancelled("Extraction cancelled.")
 
     output_root.mkdir(parents=True, exist_ok=True)
-    try:
-        (output_root / MANIFEST_NAME).unlink(missing_ok=True)
-    except OSError:
-        pass
-
     workers = get_recommended_workers() if workers is None else max(1, int(workers))
     entries_by_archive = {}
     dayz_misc_archive = None
@@ -688,7 +956,7 @@ def extract_game_data(
             progress({"type": "phase", "message": "Downloading official DayZ-Misc source assets..."})
 
         try:
-            dayz_misc_archive = _download_dayz_misc(cancel_event, progress)
+            dayz_misc_archive = _download_dayz_misc(cancel_event, progress, output_root)
         except ExtractionCancelled:
             raise
         except Exception as error:
@@ -703,14 +971,14 @@ def extract_game_data(
             source_stat = source.path.stat()
             if source_stat.st_size != source.size or source_stat.st_mtime_ns != source.mtime_ns:
                 raise GameDataExtractorError(f"Source archive changed; rescan before extraction: {source.relative_path}")
-        if clean_base_game_folders:
-            cleaned_folders = _clean_base_game_folders(plan, output_root, include_dayz_misc, cancel_event, progress)
     except Exception:
         if dayz_misc_archive:
             dayz_misc_archive.unlink(missing_ok=True)
         raise
 
     counters = {"files": 0, "bytes": 0, "last_progress": 0.0}
+    started = time.monotonic()
+    total_bytes = plan.total_bytes
     counter_lock = threading.Lock()
 
     def emit_file(item):
@@ -732,12 +1000,17 @@ def extract_game_data(
                 counters["last_progress"] = now
 
         if progress and should_emit:
+            elapsed = max(0.001, now - started)
+            throughput = processed_bytes / elapsed
             progress({
                 "type": "file",
                 "current": current,
                 "total": len(plan.entries),
                 "bytes": processed_bytes,
-                "total_bytes": plan.total_bytes,
+                "total_bytes": total_bytes,
+                "elapsed_seconds": elapsed,
+                "bytes_per_second": throughput,
+                "eta_seconds": (total_bytes - processed_bytes) / throughput if throughput else None,
                 "message": item.relative_path,
             })
 
@@ -746,6 +1019,8 @@ def extract_game_data(
             raise ExtractionCancelled("Extraction cancelled.")
 
         archive_items = entries_by_archive.get(source.relative_path, [])
+        if not archive_items:
+            return
         if progress:
             progress({"type": "archive", "message": f"Extracting {source.relative_path}"})
 
